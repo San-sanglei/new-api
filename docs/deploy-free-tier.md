@@ -21,17 +21,11 @@
 
 ---
 
-## 步骤 1：创建 GitHub 仓库
+## 步骤 1：代码仓库已推送到 Gitee
 
-```bash
-cd d:\Took\new-api-main
-git init
-git add -A
-git commit -m "production ready: audit fixed + free-tier deploy config"
-gh repo create new-api --public --source=. --push
-```
+代码已推送至：`https://gitee.com/San-sang/new-api`
 
-记下 GitHub 仓库地址，后续步骤需要。
+后续步骤直接使用此 Gitee 仓库地址导入到 Render 和 Vercel。
 
 ---
 
@@ -68,9 +62,10 @@ redis://default:[REDIS_PASSWORD]@global-[xxx].upstash.io:6379
 
 ## 步骤 4：部署 Go 后端到 Render
 
-1. 打开 https://render.com → 注册/登录（可用 GitHub 登录）
+1. 打开 https://render.com → 注册/登录（可用 GitHub 或 GitLab 登录）
 2. New + → Blueprint
-3. 选择刚才创建的 GitHub 仓库
+3. 选择 **Public Git Repository**，填入 Gitee 仓库地址：`https://gitee.com/San-sang/new-api`
+   > 注：如 Render 不支持 Gitee 直连，可在 Render 网页上手动上传 `Dockerfile` 所在仓库镜像，或先在 GitHub 镜像一份代码。
 4. Render 会自动识别 `render.yaml`，显示配置摘要
 5. 在环境变量中填入：
 
@@ -90,9 +85,10 @@ redis://default:[REDIS_PASSWORD]@global-[xxx].upstash.io:6379
 
 ## 步骤 5：部署前端到 Vercel
 
-1. 打开 https://vercel.com → 注册/登录（用 GitHub 登录）
+1. 打开 https://vercel.com → 注册/登录（用 GitHub 或 GitLab 账号）
 2. Add New → Project
-3. Import 你的 GitHub 仓库
+3. 选择 **Import Git Repository** → 填入 Gitee 仓库地址：`https://gitee.com/San-sang/new-api`
+   > 注：Vercel 原生支持 GitHub/GitLab/Bitbucket。Gitee 仓库需通过 Vercel 的"Import from URL"功能导入；如不可用，建议用 `vercel` CLI 从本地目录直接部署（见下方备选方案）。
 4. 在配置页面设置：
 
 | 配置项 | 值 |
@@ -114,6 +110,39 @@ redis://default:[REDIS_PASSWORD]@global-[xxx].upstash.io:6379
 8. Vercel 会分配 URL，如：`https://new-api-xxx.vercel.app`
 
 **验证**：访问该 URL，应看到登录页面。
+
+### 备选方案：用 Vercel CLI 从本地部署（推荐，无需 Gitee 关联）
+
+由于 Vercel 对 Gitee 非原生支持，推荐用 CLI 直接从本地推送构建产物：
+
+```powershell
+# 1. 安装 Vercel CLI
+npm i -g vercel
+
+# 2. 进入前端目录
+cd d:\Took\new-api-main\web\default
+
+# 3. 登录（会打开浏览器）
+vercel login
+
+# 4. 部署（首次会问几个问题，按下方回答）
+#    - Set up and deploy?  Y
+#    - Which scope?        选你的账号
+#    - Link to existing project?  N
+#    - Project name?       new-api
+#    - Directory?          current (./)
+vercel
+
+# 5. 部署到生产
+vercel --prod
+
+# 6. 设置环境变量（替换为 Render 后端 URL）
+vercel env add API_URL production
+# 粘贴值: https://new-api-backend.onrender.com
+
+# 7. 重新部署使环境变量生效
+vercel --prod
+```
 
 ---
 
