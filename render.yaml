@@ -1,0 +1,36 @@
+# Render Blueprint — new-api Go 后端
+# 使用方式：在 Render Dashboard → New → Blueprint → 选择本仓库
+# Render 会读取本文件自动创建 Web Service
+
+services:
+  - type: web
+    name: new-api-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/status
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: GIN_MODE
+        value: release
+      - key: SQL_DSN
+        sync: false  # 在 Render Dashboard 手动填写 Supabase 连接串
+      - key: REDIS_CONN_STRING
+        sync: false  # 在 Render Dashboard 手动填写 Upstash 连接串
+      - key: SESSION_SECRET
+        generateValue: true  # Render 自动生成随机值
+      - key: CRYPTO_SECRET
+        generateValue: true
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false  # 部署后填入 Vercel 前端域名，如 https://took.vercel.app
+      - key: NODE_TYPE
+        value: master
+      - key: BATCH_UPDATE_ENABLED
+        value: "true"
+      - key: ERROR_LOG_ENABLED
+        value: "true"
+      - key: TZ
+        value: Asia/Shanghai

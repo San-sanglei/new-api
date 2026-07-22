@@ -1,0 +1,108 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'refactor/**'
+  pull_request:
+    branches:
+      - main
+
+# 同一时间只运行一个同分支的 CI，避免重复构建浪费资源
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend Test & Vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  frontend:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Lint (default)
+        working-directory: web/default
+        run: bun run lint
+
+      - name: Typecheck (default)
+        working-directory: web/default
+        run: bun run typecheck
+
+      - name: Test (default)
+        working-directory: web/default
+        run: bun run test
+
+      - name: Build (default)
+        working-directory: web/default
+        env:
+          CI: ""
+        run: DISABLE_ESLINT_PLUGIN='true' bun run build
+
+  docker:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    # 仅在后端与前端检查全部通过后才构建镜像，避免浪费资源
+    needs: [backend, frontend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: new-api:ci-check
+          # 利用 BuildKit 缓存加速后续构建
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # CI 构建仅验证可构建性，不产出多平台镜像
+          load: true
+
+      - name: Verify image exists
+        run: docker image inspect new-api:ci-check --format '{{.Id}} {{.Config.User}}'

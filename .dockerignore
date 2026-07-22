@@ -1,0 +1,63 @@
+# === 版本控制与 IDE ===
+.github
+.git
+.vscode
+.gitignore
+.eslintcache
+
+# === 文档与构建脚本（非运行时必需） ===
+*.md
+Makefile
+docs
+
+# === 构建缓存 ===
+.gocache
+
+# === 敏感环境变量 / 密钥（禁止进入构建上下文） ===
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# === 数据库文件（禁止泄露本地数据） ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === 日志文件 ===
+*.log
+logs/
+
+# === 本地运行时数据目录 ===
+data/
+
+# === 备份文件目录（禁止进入构建上下文） ===
+backups/
+
+# === 可执行文件 ===
+*.exe
+*.dll
+*.so
+*.dylib
+
+# === 前端构建产物与依赖（在多阶段构建中由 builder 阶段重新生成） ===
+node_modules/
+dist/
+build/
+/web/node_modules
+/web/default/node_modules
+/web/default/dist
+/web/classic/node_modules
+/web/classic/dist
+
+# === 审计报告 / 临时文件 ===
+AUDIT_REPORT.md
+*.tmp
+*.bak
+*.swp
+
+# === 例外：保留第三方版权声明 ===
+!THIRD-PARTY-LICENSES.md

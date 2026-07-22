@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary Meta Tags -->
+    <title>Took</title>
+    <meta name="title" content="Took" />
+    <meta
+      name="description"
+      content="Unified AI API gateway and admin dashboard."
+    />
+
+    <meta name="theme-color" content="#0a0a0a" />
+    <!--umami-->
+    <!--Google Analytics-->
+
+    <!--
+      Apply the persisted theme before any CSS/JS paints to avoid a flash of
+      the wrong theme (FOUC). Reads from localStorage (primary) and falls back
+      to the legacy `vite-ui-theme` cookie. The `dark` class on <html> above is
+      only a last-resort default for the very first visit.
+    -->
+    <script>
+      ;(function () {
+        try {
+          var STORAGE_KEY = 'vite-ui-theme'
+          var COOKIE_NAME = 'vite-ui-theme'
+          var VALID = { dark: true, light: true, system: true }
+
+          var theme = null
+          try {
+            var ls = localStorage.getItem(STORAGE_KEY)
+            if (ls && VALID[ls]) theme = ls
+          } catch (e) {
+            /* localStorage unavailable */
+          }
+
+          if (!theme) {
+            var match = document.cookie.match(
+              new RegExp('(?:^|; )' + COOKIE_NAME + '=([^;]+)')
+            )
+            if (match && VALID[match[1]]) theme = match[1]
+          }
+
+          if (!theme) theme = 'dark'
+
+          var resolved =
+            theme === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : theme
+
+          var root = document.documentElement
+          root.classList.remove('light', 'dark')
+          root.classList.add(resolved)
+          root.style.colorScheme = resolved
+        } catch (e) {
+          /* keep default dark class on any error */
+        }
+      })()
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

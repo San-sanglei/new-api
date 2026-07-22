@@ -1,0 +1,84 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import type { ReactNode } from 'react'
+import { Database, Inbox, type LucideIcon, SearchX } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { cn } from '@/lib/utils'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { FadeIn } from '@/components/page-transition'
+
+interface EmptyStateProps {
+  icon?: LucideIcon
+  title?: string
+  description?: string
+  action?: ReactNode
+  className?: string
+  bordered?: boolean
+  /** Empty variant — changes default icon and wording */
+  variant?: 'data' | 'search' | 'inbox'
+}
+
+const DEFAULT_ICONS: Record<string, LucideIcon> = {
+  data: Database,
+  search: SearchX,
+  inbox: Inbox,
+}
+
+export function EmptyState(props: EmptyStateProps) {
+  const { t } = useTranslation()
+  const variant = props.variant ?? 'data'
+  const Icon = props.icon ?? DEFAULT_ICONS[variant] ?? Database
+
+  return (
+    <FadeIn>
+      <Empty
+        className={cn(
+          'min-h-[300px]',
+          props.bordered && 'border',
+          props.className
+        )}
+      >
+        <EmptyHeader>
+          <EmptyMedia variant='icon'>
+            <Icon className='size-6' />
+          </EmptyMedia>
+          <EmptyTitle>
+            {props.title ??
+              (variant === 'search'
+                ? t('No Results')
+                : variant === 'inbox'
+                  ? t('Nothing Here')
+                  : t('No Data'))}
+          </EmptyTitle>
+          {props.description != null && (
+            <EmptyDescription>{props.description}</EmptyDescription>
+          )}
+        </EmptyHeader>
+        {props.action != null && <EmptyContent>{props.action}</EmptyContent>}
+      </Empty>
+    </FadeIn>
+  )
+}

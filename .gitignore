@@ -1,0 +1,63 @@
+.idea
+.vscode
+.zed
+.history
+upload
+*.exe
+*.db
+build
+*.db-journal
+logs
+web/default/dist
+web/classic/dist
+web/node_modules
+web/dist
+
+# === 敏感环境变量 / 密钥（禁止提交仓库） ===
+# 真实环境配置文件（含密钥），仅保留 .env.example / .env.*.example 模板
+.env
+.env.*
+!.env.example
+!.env.*.example
+# 私钥与证书
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+*.keystore
+# 密钥/机密目录
+secrets/
+secrets.yml
+secrets.yaml
+
+one-api
+new-api
+/__debug_bin*
+.DS_Store
+tiktoken_cache
+.eslintcache
+.gocache
+.gomodcache/
+.cache
+plans
+.claude
+.cursor
+
+electron/node_modules
+electron/dist
+data/
+.gomodcache/
+.gocache-temp
+.gopath
+.test
+token_estimator_test.go
+skills-lock.json
+.playwright-mcp
+
+# Database backups
+*.db.backup*
+*.db-journal*
+*.db-wal*
+*.db-shm*

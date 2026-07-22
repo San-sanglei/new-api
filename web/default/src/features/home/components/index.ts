@@ -1,0 +1,8 @@
+export { CTA } from './sections/cta'
+export { Features } from './sections/features'
+export { Hero } from './sections/hero'
+export { HowItWorks } from './sections/how-it-works'
+export { PublicSidebar } from './public-sidebar'
+export { QuickLinks } from './quick-links'
+export { SocialProof } from './sections/social-proof'
+export { Stats } from './sections/stats'
