@@ -262,7 +262,7 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
         </div>
 
         {/* Body — fixed rows so neither block shifts when switching demos */}
-        <div className='grid h-[180px] grid-rows-[95px_minmax(0,1fr)] font-mono text-[10px] leading-[1.4]'>
+        <div className='grid h-[240px] grid-rows-[130px_minmax(0,1fr)] font-mono text-[10px] leading-[1.4]'>
           {/* Request */}
           <RequestBlock demo={demo} transitioning={transitioning} />
 

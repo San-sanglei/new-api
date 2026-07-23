@@ -28,7 +28,9 @@ interface HeaderLogoProps {
 
 /**
  * Logo component for header with loading state
- * Shows image only when fully loaded for smooth UX
+ * Shows image only when fully loaded for smooth UX.
+ * Caller passes the appropriate src per theme (logo.png for light,
+ * logo-white.png for dark) so no CSS filter is needed here.
  */
 export function HeaderLogo({
   src,

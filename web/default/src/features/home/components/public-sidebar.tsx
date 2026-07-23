@@ -39,6 +39,7 @@ import { NotificationPopover } from '@/components/notification-popover'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { HeaderLogo } from '@/components/layout/components/header-logo'
 import { useTheme } from '@/context/theme-provider'
+import { withLogoCacheBust } from '@/lib/constants'
 
 interface NavItem {
   label: string
@@ -88,26 +89,19 @@ export function PublicSidebar(props: PublicSidebarProps) {
       )}
     >
       {/* Logo / Brand */}
-      <div className='flex h-16 shrink-0 items-center gap-2.5 px-5'>
-        <div className='flex size-7 shrink-0 items-center justify-center'>
+      <div className='flex h-20 shrink-0 items-center justify-center px-5'>
+        <div className='flex size-16 shrink-0 items-center justify-center'>
           {loading ? (
             <Skeleton className='size-full rounded-lg' />
           ) : (
             <HeaderLogo
-              src={resolvedTheme === 'dark' ? systemLogo.replace(/\.png$/, '-white.png') : systemLogo}
+              src={withLogoCacheBust(resolvedTheme === 'dark' ? systemLogo.replace(/\.png$/, '-white.png') : systemLogo)}
               loading={loading}
               logoLoaded={logoLoaded}
               className='size-full rounded-lg object-contain'
             />
           )}
         </div>
-        <span className='text-sm font-semibold tracking-tight'>
-          {loading ? (
-            <Skeleton className='h-4 w-16' />
-          ) : (
-            systemName || 'Took'
-          )}
-        </span>
       </div>
 
       {/* Navigation */}

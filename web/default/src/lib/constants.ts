@@ -24,6 +24,21 @@ For commercial licensing, please contact support@quantumnous.com
 export const DEFAULT_SYSTEM_NAME = 'New API'
 export const DEFAULT_LOGO = '/logo.png'
 
+// Logo cache-buster: bump this whenever logo assets are replaced to
+// force browsers to refetch /logo.png and /logo-white.png.
+export const LOGO_CACHE_VERSION = '20260723f'
+
+/**
+ * Append a cache-busting query param to a logo URL so updated logo
+ * assets bypass the browser disk cache. Preserves any existing path
+ * (including -white.png variants) and avoids double-appending ?v=.
+ */
+export function withLogoCacheBust(src: string): string {
+  if (!src) return src
+  const sep = src.includes('?') ? '&' : '?'
+  return `${src}${sep}v=${LOGO_CACHE_VERSION}`
+}
+
 // LocalStorage Keys
 export const STORAGE_KEYS = {
   SYSTEM_NAME: 'system_name',
