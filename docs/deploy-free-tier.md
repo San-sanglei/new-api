@@ -42,7 +42,51 @@
 postgresql://postgres:[YOUR_PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres
 ```
 
-将 `[YOUR_PASSWORD]` 替换为你设置的密码。这就是 `SQL_DSN` 的值。
+**⚠️ 关键：密码必须 URL 编码**
+
+直接替换 `[YOUR_PASSWORD]` 为明文密码会在密码含特殊字符（`@ # : / % 空格` 等）时导致 Go `net/url` 解析失败，错误：
+```
+cannot parse `postgresql://...`: failed to parse as URL (net/url: invalid userinfo)
+```
+
+正确做法：
+1. **禁止保留 `[` `]` 方括号** — 占位符必须替换
+2. **对密码做 URL 编码** — 使用 [urlencoder.org](https://www.urlencoder.org/) 或下方命令
+
+```bash
+# Linux/macOS
+echo -n '你的明文密码' | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read()))"
+
+# Windows PowerShell
+[uri]::EscapeDataString('你的明文密码')
+```
+
+3. 常见字符编码映射：
+   - `@` → `%40`
+   - `#` → `%23`
+   - `:` → `%3A`
+   - `/` → `%2F`
+   - `%` → `%25`
+   - 空格 → `%20`
+
+**推荐：使用 Supabase Pooler 连接（Session Mode）**
+
+在 Supabase Dashboard → Database → Connection Pooling，复制 Pooler URL（端口 6543）：
+```
+postgresql://postgres.bjxmtpavaozircacwymc:[ENCODED_PASSWORD]@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres
+```
+
+Pooler 优势：
+- 连接池管理，避免连接耗尽
+- Render 免费版重启/扩容时连接更稳定
+- Supabase 免费版最多 60 个直接连接，Pooler 无此限制
+
+**最终示例**（假设密码为 `P@ss:w0rd`）：
+```
+SQL_DSN=postgresql://postgres.bjxmtpavaozircacwymc:P%40ss%3Aw0rd@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres
+```
+
+注意：项目使用 `SQL_DSN` 环境变量（不是 `DATABASE_URL`），render.yaml 中已声明。
 
 ---
 
