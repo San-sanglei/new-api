@@ -3,7 +3,7 @@ import type { FAQItem } from '../types'
 export const FAQ_ITEMS: FAQItem[] = [
   {
     question: '免费版有什么限制？',
-    answer: '免费版提供每月 10 万 Token 额度，支持 GPT-3.5 等基础模型，并发请求数为 2。适合个人开发者进行体验和测试。如果需要更高额度、更多模型或更高的并发，建议升级到专业版。',
+    answer: '免费版提供每月 10 万 Token 额度，支持 GPT-4.1-mini 等基础模型，并发请求数为 2。适合个人开发者进行体验和测试。如果需要更高额度、更多模型或更高的并发，建议升级到专业版。',
   },
   {
     question: '如何从免费版升级到专业版？',
