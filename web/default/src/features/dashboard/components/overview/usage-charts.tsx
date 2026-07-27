@@ -29,7 +29,12 @@ const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000
 
 function buildMockTrendData() {
   const now = Date.now()
-  const models = ['GPT-4o', 'Claude 3.5', 'DeepSeek V3', 'Gemini 1.5']
+  const models = [
+    'GPT-5',
+    'Claude Sonnet 4.5',
+    'Gemini 2.5 Flash',
+    'DeepSeek V3.1'
+  ]
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(now - (6 - i) * 24 * 60 * 60 * 1000)
     return d.toISOString().slice(0, 10)
@@ -129,7 +134,12 @@ export function UsageCharts() {
       grouped[d.model] = (grouped[d.model] || 0) + d.calls
     }
     const total = Object.values(grouped).reduce((a, b) => a + b, 0)
-    if (total === 0) return [{ type: 'GPT-4o', value: 45 }, { type: 'Claude 3.5', value: 25 }, { type: 'DeepSeek V3', value: 18 }, { type: 'Gemini 1.5', value: 12 }]
+    if (total === 0) return [
+      { type: 'GPT-5', value: 45 },
+      { type: 'Claude Sonnet 4.5', value: 25 },
+      { type: 'Gemini 2.5 Flash', value: 18 },
+      { type: 'DeepSeek V3.1', value: 12 }
+    ]
     return Object.entries(grouped)
       .map(([type, value]) => ({ type, value: Math.round((value / total) * 100) }))
       .sort((a, b) => b.value - a.value)

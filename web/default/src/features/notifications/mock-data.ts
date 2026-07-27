@@ -93,7 +93,7 @@ function buildMockNotifications(): MockNotification[] {
       title: '新功能上线',
       content:
         'Playground 现已支持多模态对话（图像 + 文本），可在工作台直接上传图片进行调试。',
-      extra: '支持模型：GPT-4o、Claude 3.5 Sonnet、Gemini 1.5 Pro',
+      extra: '支持模型：GPT-5、Claude Sonnet 4.5、Gemini 2.5 Pro',
       publishDate: days(1),
     },
     {

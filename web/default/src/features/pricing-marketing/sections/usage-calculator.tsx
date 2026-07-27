@@ -6,15 +6,15 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 const MODELS = [
-  { id: 'gpt4o', name: 'GPT-4.1', input: 2.5, output: 10 },
-  { id: 'claude35', name: 'Claude Sonnet 4.5', input: 3.0, output: 15 },
+  { id: 'gpt5', name: 'GPT-5', input: 5, output: 20 },
+  { id: 'claude45', name: 'Claude Sonnet 4.5', input: 3.0, output: 15 },
   { id: 'deepseek', name: 'DeepSeek V3.1', input: 0.28, output: 0.42 },
-  { id: 'gemini', name: 'Gemini 2.5 Pro', input: 1.25, output: 10 },
+  { id: 'gemini', name: 'Gemini 2.5 Flash', input: 0.08, output: 0.3 },
 ]
 
 export function UsageCalculator() {
   const [calls, setCalls] = useState('100000')
-  const [modelId, setModelId] = useState('gpt4o')
+  const [modelId, setModelId] = useState('gpt5')
 
   const estimate = useMemo(() => {
     const model = MODELS.find((m) => m.id === modelId)
