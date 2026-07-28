@@ -153,17 +153,19 @@ export function PublicSidebar(props: PublicSidebarProps) {
       <div className='border-t border-sidebar-border px-3 py-4'>
         <div className='mb-3 flex items-center justify-center gap-1'>
           <ThemeSwitch />
-          <NotificationPopover
-            open={notifications.popoverOpen}
-            onOpenChange={notifications.setPopoverOpen}
-            unreadCount={notifications.unreadCount}
-            activeTab={notifications.activeTab}
-            onTabChange={notifications.setActiveTab}
-            notice={notifications.notice}
-            announcements={notifications.announcements}
-            loading={notifications.loading}
-            onMarkAllRead={notifications.markAllRead}
-          />
+          {isAuthenticated && (
+            <NotificationPopover
+              open={notifications.popoverOpen}
+              onOpenChange={notifications.setPopoverOpen}
+              unreadCount={notifications.unreadCount}
+              activeTab={notifications.activeTab}
+              onTabChange={notifications.setActiveTab}
+              notice={notifications.notice}
+              announcements={notifications.announcements}
+              loading={notifications.loading}
+              onMarkAllRead={notifications.markAllRead}
+            />
+          )}
           <LanguageSwitcher />
         </div>
         {isAuthenticated ? (

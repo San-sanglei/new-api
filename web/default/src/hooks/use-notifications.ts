@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useAuthStore } from '@/stores/auth-store'
 import { useNotificationStore } from '@/stores/notification-store'
 import { getNotice } from '@/lib/api'
 import { useStatus } from '@/hooks/use-status'
@@ -71,6 +72,10 @@ export function useNotifications() {
     'announcements'
   )
 
+  // 登录状态：未登录时不发起 /api/notice 请求，避免无效调用与潜在 401
+  const { auth } = useAuthStore()
+  const isAuthenticated = !!auth.user
+
   // Fetch Notice from API
   const {
     data: noticeResponse,
@@ -79,6 +84,7 @@ export function useNotifications() {
   } = useQuery({
     queryKey: ['notice'],
     queryFn: getNotice,
+    enabled: isAuthenticated,
     staleTime: 1000 * 60 * 5, // 5 minutes
   })
 
