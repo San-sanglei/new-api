@@ -64,6 +64,11 @@ type Task struct {
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
+
+	// Phase 2-D：任务归属租户（默认租户=1，向后兼容）
+	// 写入：InitTask 时从 relayInfo.TenantID 获取
+	// 查询：admin/用户列表按 tenant_id 过滤；轮询路径不过滤
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 }
 
 func (t *Task) SetData(data any) {
@@ -194,6 +199,12 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		taskID = GenerateTaskID()
 	}
 
+	// Phase 2-D：从 RelayInfo 获取 tenant_id，未命中走默认租户兜底
+	tenantId := DefaultTenantID
+	if relayInfo != nil && relayInfo.TenantID > 0 {
+		tenantId = relayInfo.TenantID
+	}
+
 	t := &Task{
 		TaskID:      taskID,
 		UserId:      relayInfo.UserId,
@@ -205,6 +216,7 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		Platform:    platform,
 		Properties:  properties,
 		PrivateData: privateData,
+		TenantID:    tenantId,
 	}
 	return t
 }
@@ -214,11 +226,16 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 // 现改为 ([]*Task, error)，DB error 时返回 (nil, error) 让调用方返回数据库错误响应。
 // - 查询成功（含空结果）：返回 (tasks, nil)
 // - DB error：返回 (nil, error)
-func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQueryParams) ([]*Task, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQueryParams, tenantId int) ([]*Task, error) {
 	var tasks []*Task
 
 	// 初始化查询构建器
 	query := DB.Where("user_id = ?", userId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
@@ -251,11 +268,16 @@ func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQ
 
 // TaskGetAllTasks 返回管理员的任务列表。
 // P4-5 修复：同 TaskGetAllUserTask，返回 ([]*Task, error) 区分"无任务"与"DB 故障"。
-func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) ([]*Task, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams, tenantId int) ([]*Task, error) {
 	var tasks []*Task
 
 	// 初始化查询构建器
 	query := DB
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 
 	// 添加过滤条件
 	if queryParams.ChannelID != "" {
@@ -460,9 +482,13 @@ type TaskQuotaUsage struct {
 }
 
 // TaskCountAllTasks returns total tasks that match the given query params (admin usage)
-func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）
+func TaskCountAllTasks(queryParams SyncTaskQueryParams, tenantId int) int64 {
 	var total int64
 	query := DB.Model(&Task{})
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if queryParams.ChannelID != "" {
 		query = query.Where("channel_id = ?", queryParams.ChannelID)
 	}
@@ -498,9 +524,13 @@ func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
 }
 
 // TaskCountAllUserTask returns total tasks for given user
-func TaskCountAllUserTask(userId int, queryParams SyncTaskQueryParams) int64 {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）
+func TaskCountAllUserTask(userId int, queryParams SyncTaskQueryParams, tenantId int) int64 {
 	var total int64
 	query := DB.Model(&Task{}).Where("user_id = ?", userId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}

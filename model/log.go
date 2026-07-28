@@ -34,6 +34,7 @@ func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm
 type Log struct {
 	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
 	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
+	TenantID          int    `json:"tenant_id" gorm:"type:int;default:1;index"` // 租户 ID（多租户第二阶段，Phase 2-A 仅加字段，查询隔离留待 2-B）
 	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
 	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content           string `json:"content"`
@@ -100,14 +101,27 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 // task_id / quota / refund_log_required=true），便于告警触发对账流程。
 // 函数本身仍不阻塞、不重试，仅暴露状态。不改变业务流程：调用方收到 error 后仅 SysError，
 // 不返回 HTTP error，不阻断业务。
-func RecordLog(userId int, logType int, content string) error {
+//
+// Phase 2-B-2：增加 c *gin.Context 参数，从 context 取 tenant_id 写入日志，实现租户隔离。
+// model 层内部调用（无 c 上下文）请使用 RecordLogWithTenant 显式传入 tenantId。
+func RecordLog(c *gin.Context, userId int, logType int, content string) error {
+	return RecordLogWithTenant(userId, getTenantIdFromContext(c), logType, content)
+}
+
+// RecordLogWithTenant 记录日志（显式传入 tenantId），供 model 层内部调用使用。
+// Phase 2-B-2：用于无 gin.Context 的异步/内部路径（如支付回调、订阅、兑换码）。
+func RecordLogWithTenant(userId int, tenantId int, logType int, content string) error {
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return nil
+	}
+	if tenantId <= 0 {
+		tenantId = DefaultTenantID
 	}
 	username, _ := GetUsernameById(userId, false)
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
+		TenantID:  tenantId,
 		CreatedAt: common.GetTimestamp(),
 		Type:      logType,
 		Content:   content,
@@ -118,6 +132,20 @@ func RecordLog(userId int, logType int, content string) error {
 		return err
 	}
 	return nil
+}
+
+// getTenantIdFromContext 从 gin.Context 获取 tenant_id，
+// 缺失或非正数时回退到 DefaultTenantID。
+// Phase 2-B-2：用于日志写入侧统一取值。
+func getTenantIdFromContext(c *gin.Context) int {
+	if c == nil {
+		return DefaultTenantID
+	}
+	tid := c.GetInt("tenant_id")
+	if tid <= 0 {
+		return DefaultTenantID
+	}
+	return tid
 }
 
 // RecordLogWithAdminInfo 记录操作日志，并将管理员相关信息存入 Other.admin_info，
@@ -161,15 +189,21 @@ func buildOpField(action string, params map[string]interface{}) map[string]inter
 // username 由调用方传入（登录流程已持有用户对象），避免额外的数据库查询。
 // content 为英文兜底文本（用于导出/经典前端）；action+params 供前端本地化渲染。
 // extra 可携带 login_method、user_agent 等附加信息（普通用户可见）。
-func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]interface{}, extra map[string]interface{}) {
+//
+// Phase 2-B-2：增加 tenantId 参数用于租户隔离。
+func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]interface{}, extra map[string]interface{}, tenantId int) {
 	other := map[string]interface{}{}
 	for k, v := range extra {
 		other[k] = v
 	}
 	other["op"] = buildOpField(action, params)
+	if tenantId <= 0 {
+		tenantId = DefaultTenantID
+	}
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
+		TenantID:  tenantId,
 		CreatedAt: common.GetTimestamp(),
 		Type:      LogTypeLogin,
 		Content:   content,
@@ -187,7 +221,10 @@ func RecordLoginLog(userId int, username string, content string, ip string, acti
 // action+params 写入 Other.op，供前端本地化渲染（普通用户可见，不含敏感信息）。
 // adminInfo 存放操作者身份（写入 Other.admin_info，普通用户查询时剥离）；
 // auditInfo 存放路由/方法/结果等中间件兜底信息（写入 Other.audit_info，普通用户查询时剥离）。
-func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]interface{}, adminInfo map[string]interface{}, auditInfo map[string]interface{}) {
+//
+// Phase 2-B-2：增加 tenantId 参数用于租户隔离。
+// 调用方若处于异步 goroutine（如 middleware/audit.go）需在派发前从 c 取好 tenantId 再传入。
+func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]interface{}, adminInfo map[string]interface{}, auditInfo map[string]interface{}, tenantId int) {
 	username, _ := GetUsernameById(logUserId, false)
 	other := map[string]interface{}{
 		"op": buildOpField(action, params),
@@ -198,9 +235,13 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 	if len(auditInfo) > 0 {
 		other["audit_info"] = auditInfo
 	}
+	if tenantId <= 0 {
+		tenantId = DefaultTenantID
+	}
 	log := &Log{
 		UserId:    logUserId,
 		Username:  username,
+		TenantID:  tenantId,
 		CreatedAt: common.GetTimestamp(),
 		Type:      LogTypeManage,
 		Content:   content,
@@ -213,6 +254,14 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 }
 
 func RecordTopupLog(userId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
+	// Phase 2-D：兼容旧调用方，使用默认租户
+	RecordTopupLogWithTenant(userId, DefaultTenantID, content, callerIp, paymentMethod, callbackPaymentMethod)
+}
+
+// RecordTopupLogWithTenant 记录充值日志（带 tenant_id）
+// Phase 2-D：用于支付/补单路径，使用订单已存的 tenant_id 写日志，
+// 不改变任何支付/Epay 业务流程。
+func RecordTopupLogWithTenant(userId int, tenantId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
 	username, _ := GetUsernameById(userId, false)
 	adminInfo := map[string]interface{}{
 		"server_ip":               common.GetIp(),
@@ -225,6 +274,9 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 	other := map[string]interface{}{
 		"admin_info": adminInfo,
 	}
+	if tenantId <= 0 {
+		tenantId = DefaultTenantID
+	}
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
@@ -233,6 +285,7 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 		Content:   content,
 		Ip:        callerIp,
 		Other:     common.MapToJsonStr(other),
+		TenantID:  tenantId,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -265,6 +318,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
+		TenantID:         getTenantIdFromContext(c),
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeError,
 		Content:          content,
@@ -340,6 +394,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
+		TenantID:         getTenantIdFromContext(c),
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeConsume,
 		Content:          params.Content,
@@ -385,6 +440,7 @@ type RecordTaskBillingLogParams struct {
 	TokenId   int
 	Group     string
 	Other     map[string]interface{}
+	TenantId  int // Phase 2-B-2：租户 ID，调用方异步场景需提前从 c 取好传入
 }
 
 // RecordTaskBillingLog 记录任务计费日志（消费/退款）。
@@ -410,6 +466,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) error {
 	log := &Log{
 		UserId:    params.UserId,
 		Username:  username,
+		TenantID:  params.TenantId,
 		CreatedAt: common.GetTimestamp(),
 		Type:      params.LogType,
 		Content:   params.Content,
@@ -428,12 +485,19 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) error {
 	return nil
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+// GetAllLogs 查询日志（管理员视角）。
+// Phase 2-B-2：增加 tenantId 参数用于租户隔离。
+//   - tenantId > 0：仅查询该租户日志（普通 admin）
+//   - tenantId == 0：跨租户查询（root 超级管理员）
+func GetAllLogs(logType int, tenantId int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
 	} else {
 		tx = LOG_DB.Where("logs.type = ?", logType)
+	}
+	if tenantId > 0 {
+		tx = tx.Where("logs.tenant_id = ?", tenantId)
 	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
@@ -517,12 +581,19 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+// GetUserLogs 查询用户日志。
+// Phase 2-B-2：增加 tenantId 参数，与 user_id 共同过滤。
+//   - tenantId > 0：增加 tenant_id 过滤
+//   - tenantId == 0：跨租户查询（root 旁路，但用户视角通常不需要）
+func GetUserLogs(userId int, tenantId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
 	} else {
 		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
+	}
+	if tenantId > 0 {
+		tx = tx.Where("logs.tenant_id = ?", tenantId)
 	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
@@ -567,11 +638,20 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
+// SumUsedQuota 统计消费额度 / RPM / TPM。
+// Phase 2-B-2：增加 tenantId 参数用于租户隔离。
+//   - tenantId > 0：仅统计该租户
+//   - tenantId == 0：跨租户统计（root 旁路）
+func SumUsedQuota(logType int, tenantId int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("sum(quota) quota")
 
 	// 为rpm和tpm创建单独的查询
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
+
+	if tenantId > 0 {
+		tx = tx.Where("tenant_id = ?", tenantId)
+		rpmTpmQuery = rpmTpmQuery.Where("tenant_id = ?", tenantId)
+	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
 		return stat, err

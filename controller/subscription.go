@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -34,8 +35,10 @@ func GetSubscriptionPlans(c *gin.Context) {
 		return
 	}
 
+	// Phase 2-D：用户视角仅展示当前租户的启用套餐。
+	tenantId := service.GetTenantID(c)
 	var plans []model.SubscriptionPlan
-	if err := model.DB.Where("enabled = ?", true).Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+	if err := model.DB.Where("enabled = ? AND tenant_id = ?", true, tenantId).Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -54,14 +57,20 @@ func GetSubscriptionSelf(c *gin.Context) {
 	settingMap, _ := model.GetUserSetting(userId, false)
 	pref := common.NormalizeBillingPreference(settingMap.BillingPreference)
 
+	// Phase 2-D：用户视角按租户过滤订阅。Root 用户走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+
 	// Get all subscriptions (including expired)
-	allSubscriptions, err := model.GetAllUserSubscriptions(userId)
+	allSubscriptions, err := model.GetAllUserSubscriptions(userId, tenantId)
 	if err != nil {
 		allSubscriptions = []model.SubscriptionSummary{}
 	}
 
 	// Get active subscriptions for backward compatibility
-	activeSubscriptions, err := model.GetAllActiveUserSubscriptions(userId)
+	activeSubscriptions, err := model.GetAllActiveUserSubscriptions(userId, tenantId)
 	if err != nil {
 		activeSubscriptions = []model.SubscriptionSummary{}
 	}
@@ -109,7 +118,12 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 		return
 	}
 
-	if err := model.PurchaseSubscriptionWithBalance(userId, req.PlanId); err != nil {
+	// Phase 2-D：用户视角按租户校验套餐。Root 用户走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	if err := model.PurchaseSubscriptionWithBalance(userId, req.PlanId, tenantId); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -119,8 +133,17 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 // ---- Admin APIs ----
 
 func AdminListSubscriptionPlans(c *gin.Context) {
+	// Phase 2-D：管理员视角按租户过滤套餐。Root 跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
 	var plans []model.SubscriptionPlan
-	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+	query := model.DB
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
+	if err := query.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -194,6 +217,8 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
 		return
 	}
+	// Phase 2-D：写入当前管理员所属租户
+	req.Plan.TenantID = service.GetTenantID(c)
 	err := model.DB.Create(&req.Plan).Error
 	if err != nil {
 		common.ApiError(c, err)
@@ -211,6 +236,15 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	if id <= 0 {
 		common.ApiErrorMsg(c, "无效的ID")
+		return
+	}
+	// Phase 2-D：校验套餐所属租户。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	if _, err := model.GetSubscriptionPlanByIdWithTenant(id, tenantId); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	var req AdminUpsertSubscriptionPlanRequest
@@ -287,7 +321,12 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		if req.Plan.AllowBalancePay != nil {
 			updateMap["allow_balance_pay"] = *req.Plan.AllowBalancePay
 		}
-		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
+		// Phase 2-D：更新时附加 tenant_id 条件，避免跨租户覆盖
+		updateQuery := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id)
+		if tenantId > 0 {
+			updateQuery = updateQuery.Where("tenant_id = ?", tenantId)
+		}
+		if err := updateQuery.Updates(updateMap).Error; err != nil {
 			return err
 		}
 		return nil
@@ -314,12 +353,26 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的ID")
 		return
 	}
+	// Phase 2-D：校验套餐所属租户。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	if _, err := model.GetSubscriptionPlanByIdWithTenant(id, tenantId); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	var req AdminUpdateSubscriptionPlanStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Update("enabled", *req.Enabled).Error; err != nil {
+	// Phase 2-D：更新时附加 tenant_id 条件
+	updateQuery := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id)
+	if tenantId > 0 {
+		updateQuery = updateQuery.Where("tenant_id = ?", tenantId)
+	}
+	if err := updateQuery.Update("enabled", *req.Enabled).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -342,7 +395,12 @@ func AdminBindSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	msg, err := model.AdminBindSubscription(req.UserId, req.PlanId, "")
+	// Phase 2-D：按租户校验套餐。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	msg, err := model.AdminBindSubscription(req.UserId, req.PlanId, "", tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -362,7 +420,12 @@ func AdminListUserSubscriptions(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的用户ID")
 		return
 	}
-	subs, err := model.GetAllUserSubscriptions(userId)
+	// Phase 2-D：按租户过滤订阅。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	subs, err := model.GetAllUserSubscriptions(userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -390,7 +453,12 @@ func AdminCreateUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	msg, err := model.AdminBindSubscription(userId, req.PlanId, "")
+	// Phase 2-D：按租户校验套餐。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	msg, err := model.AdminBindSubscription(userId, req.PlanId, "", tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -409,7 +477,12 @@ func AdminInvalidateUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的订阅ID")
 		return
 	}
-	msg, err := model.AdminInvalidateUserSubscription(subId)
+	// Phase 2-D：按租户校验订阅归属。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	msg, err := model.AdminInvalidateUserSubscription(subId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -428,7 +501,12 @@ func AdminDeleteUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的订阅ID")
 		return
 	}
-	msg, err := model.AdminDeleteUserSubscription(subId)
+	// Phase 2-D：按租户校验订阅归属。Root 跨租户。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	msg, err := model.AdminDeleteUserSubscription(subId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return

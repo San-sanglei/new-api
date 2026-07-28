@@ -24,6 +24,7 @@ const UserNameMaxLength = 20
 type User struct {
 	Id               int            `json:"id"`
 	Username         string         `json:"username" gorm:"unique;index" validate:"max=20"`
+	CurrentTenantID  int            `json:"current_tenant_id" gorm:"type:int;default:1;column:current_tenant_id;index"` // 当前活动租户（多对多通过 tenant_members 表维护）
 	Password         string         `json:"password" gorm:"not null;" validate:"min=8,max=20"`
 	OriginalPassword string         `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
 	DisplayName      string         `json:"display_name" gorm:"index" validate:"max=20"`
@@ -197,7 +198,10 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
-func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err error) {
+// GetAllUsers 返回用户列表（管理员视角）。
+// Phase 2-D：tenantId > 0 时按 current_tenant_id 过滤；<= 0 时跨租户查询（Root）。
+// 用户实体保持全局，不影响 GetUserById 等身份查询。
+func GetAllUsers(pageInfo *common.PageInfo, tenantId int) (users []*User, total int64, err error) {
 	// Start transaction
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -210,14 +214,22 @@ func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err err
 	}()
 
 	// Get total count within transaction
-	err = tx.Unscoped().Model(&User{}).Count(&total).Error
+	countQuery := tx.Unscoped().Model(&User{})
+	if tenantId > 0 {
+		countQuery = countQuery.Where("current_tenant_id = ?", tenantId)
+	}
+	err = countQuery.Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
 	// Get paginated users within same transaction
-	err = tx.Unscoped().Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password").Find(&users).Error
+	listQuery := tx.Unscoped()
+	if tenantId > 0 {
+		listQuery = listQuery.Where("current_tenant_id = ?", tenantId)
+	}
+	err = listQuery.Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password").Find(&users).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
@@ -231,7 +243,9 @@ func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err err
 	return users, total, nil
 }
 
-func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int) ([]*User, int64, error) {
+// SearchUsers 按关键词搜索用户（管理员视角）。
+// Phase 2-D：tenantId > 0 时按 current_tenant_id 过滤；<= 0 时跨租户查询（Root）。
+func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int, tenantId int) ([]*User, int64, error) {
 	var users []*User
 	var total int64
 	var err error
@@ -249,6 +263,9 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 
 	// 构建基础查询
 	query := tx.Unscoped().Model(&User{})
+	if tenantId > 0 {
+		query = query.Where("current_tenant_id = ?", tenantId)
+	}
 
 	// 构建搜索条件
 	likeCondition := "username LIKE ? OR email LIKE ? OR display_name LIKE ?"
@@ -426,7 +443,8 @@ func (user *User) Insert(inviterId int) error {
 	}
 
 	if common.QuotaForNewUser > 0 {
-		if logErr := RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser))); logErr != nil {
+		// Phase 2-B-2：注册路径无 c，走默认租户兜底
+		if logErr := RecordLogWithTenant(user.Id, DefaultTenantID, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser))); logErr != nil {
 			// P4-5：注册赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 			common.SysError(fmt.Sprintf(
 				"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -444,7 +462,7 @@ func (user *User) Insert(inviterId int) error {
 					"quota grant failed: user_id=%d quota=%d quota_grant_required=true err=%v",
 					user.Id, common.QuotaForInvitee, quotaErr,
 				))
-			} else if logErr := RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee))); logErr != nil {
+			} else if logErr := RecordLogWithTenant(user.Id, DefaultTenantID, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee))); logErr != nil {
 				// P4-5：邀请赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 				common.SysError(fmt.Sprintf(
 					"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -457,7 +475,8 @@ func (user *User) Insert(inviterId int) error {
 			//   但 RecordLog 仍写入"邀请用户赠送 X"造成审计日志撒谎。
 			//   保持原行为（inviter quota 调用被注释），仅 RecordLog 在被发放后才会落库；
 			//   不修改 inviter 赠送逻辑，只确保邀请人日志失败时仍触发 SysError。
-			if logErr := RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter))); logErr != nil {
+			// Phase 2-B-2：邀请人日志，无 c，走默认租户兜底
+			if logErr := RecordLogWithTenant(inviterId, DefaultTenantID, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter))); logErr != nil {
 				// P4-5：邀请赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 				common.SysError(fmt.Sprintf(
 					"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -515,7 +534,8 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	}
 
 	if common.QuotaForNewUser > 0 {
-		if logErr := RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser))); logErr != nil {
+		// Phase 2-B-2：注册路径无 c，走默认租户兜底
+		if logErr := RecordLogWithTenant(user.Id, DefaultTenantID, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser))); logErr != nil {
 			// P4-5：注册赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 			common.SysError(fmt.Sprintf(
 				"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -533,7 +553,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 					"quota grant failed: user_id=%d quota=%d quota_grant_required=true err=%v",
 					user.Id, common.QuotaForInvitee, quotaErr,
 				))
-			} else if logErr := RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee))); logErr != nil {
+			} else if logErr := RecordLogWithTenant(user.Id, DefaultTenantID, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee))); logErr != nil {
 				// P4-5：邀请赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 				common.SysError(fmt.Sprintf(
 					"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -542,7 +562,8 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 			}
 		}
 		if common.QuotaForInviter > 0 {
-			if logErr := RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter))); logErr != nil {
+			// Phase 2-B-2：邀请人日志，无 c，走默认租户兜底
+			if logErr := RecordLogWithTenant(inviterId, DefaultTenantID, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter))); logErr != nil {
 				// P4-5：邀请赠送已发放但日志未落库，运维需对账 user quota 是否一致。
 				common.SysError(fmt.Sprintf(
 					"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",

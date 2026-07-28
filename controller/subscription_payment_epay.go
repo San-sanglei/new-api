@@ -32,7 +32,8 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	// Phase 2-D Review：按当前用户租户校验套餐，避免跨租户购买
+	plan, err := model.GetSubscriptionPlanByIdWithTenant(req.PlanId, service.GetTenantID(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -52,7 +53,8 @@ func SubscriptionRequestEpay(c *gin.Context) {
 
 	userId := c.GetInt("id")
 	if plan.MaxPurchasePerUser > 0 {
-		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id)
+		// Phase 2-D：按租户统计用户已购订阅
+		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id, service.GetTenantID(c))
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -93,6 +95,8 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderEpay,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// Phase 2-D Review：写入当前用户所属租户
+		TenantID: service.GetTenantID(c),
 	}
 	if err := order.Insert(); err != nil {
 		common.ApiErrorMsg(c, "创建订单失败")

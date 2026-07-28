@@ -205,7 +205,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 									logContent := fmt.Sprintf("视频任务成功补扣费，模型倍率 %.2f，分组倍率 %.2f，tokens %d，预扣费 %s，实际扣费 %s，补扣费 %s",
 										modelRatio, finalGroupRatio, taskResult.TotalTokens,
 										logger.LogQuota(preConsumedQuota), logger.LogQuota(actualQuota), logger.LogQuota(quotaDelta))
-									if logErr := model.RecordLog(task.UserId, model.LogTypeSystem, logContent); logErr != nil {
+									// Phase 2-B-2：异步路径无 gin.Context，传 nil 走默认租户兜底
+									if logErr := model.RecordLog(nil, task.UserId, model.LogTypeSystem, logContent); logErr != nil {
 										// P4-5：补扣费日志写入失败仅 SysError，不阻断业务（quota 已扣减到位）。
 										common.SysError(fmt.Sprintf(
 											"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -232,7 +233,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 									logContent := fmt.Sprintf("视频任务成功退还多扣费用，模型倍率 %.2f，分组倍率 %.2f，tokens %d，预扣费 %s，实际扣费 %s，退还 %s",
 										modelRatio, finalGroupRatio, taskResult.TotalTokens,
 										logger.LogQuota(preConsumedQuota), logger.LogQuota(actualQuota), logger.LogQuota(refundQuota))
-									if logErr := model.RecordLog(task.UserId, model.LogTypeSystem, logContent); logErr != nil {
+									// Phase 2-B-2：异步路径无 gin.Context，传 nil 走默认租户兜底
+									if logErr := model.RecordLog(nil, task.UserId, model.LogTypeSystem, logContent); logErr != nil {
 										// P4-5 退款日志重点：退款已发放但日志未落库，运维需对账 user quota 是否一致。
 										common.SysError(fmt.Sprintf(
 											"RecordLog failed: refund_log_required=true, log_persist_required=true, task_id=%s, user_id=%d, quota=%d, log_type=refund, err=%v",
@@ -300,7 +302,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 			))
 		}
 		logContent := fmt.Sprintf("Video async task failed %s, refund %s", task.TaskID, logger.LogQuota(quota))
-		if logErr := model.RecordLog(task.UserId, model.LogTypeSystem, logContent); logErr != nil {
+		// Phase 2-B-2：异步路径无 gin.Context，传 nil 走默认租户兜底
+		if logErr := model.RecordLog(nil, task.UserId, model.LogTypeSystem, logContent); logErr != nil {
 			// P4-5 退款日志重点：退款已发放但日志未落库，运维需对账 user quota 是否一致。
 			common.SysError(fmt.Sprintf(
 				"RecordLog failed: refund_log_required=true, log_persist_required=true, task_id=%s, user_id=%d, quota=%d, log_type=refund, err=%v",

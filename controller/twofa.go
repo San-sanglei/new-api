@@ -121,7 +121,7 @@ func Setup2FA(c *gin.Context) {
 	}
 
 	// 记录操作日志
-	if err := model.RecordLog(userId, model.LogTypeSystem, "开始设置两步验证"); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, "开始设置两步验证"); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,
@@ -198,7 +198,7 @@ func Enable2FA(c *gin.Context) {
 	}
 
 	// 记录操作日志
-	if err := model.RecordLog(userId, model.LogTypeSystem, "成功启用两步验证"); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, "成功启用两步验证"); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,
@@ -283,7 +283,7 @@ func Disable2FA(c *gin.Context) {
 	}
 
 	// 记录操作日志
-	if err := model.RecordLog(userId, model.LogTypeSystem, "禁用两步验证"); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, "禁用两步验证"); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,
@@ -407,7 +407,7 @@ func RegenerateBackupCodes(c *gin.Context) {
 	}
 
 	// 记录操作日志
-	if err := model.RecordLog(userId, model.LogTypeSystem, "重新生成两步验证备用码"); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, "重新生成两步验证备用码"); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,

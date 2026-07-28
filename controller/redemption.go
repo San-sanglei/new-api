@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +17,12 @@ import (
 
 func GetAllRedemptions(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := model.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	redemptions, total, err := model.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -30,7 +36,12 @@ func GetAllRedemptions(c *gin.Context) {
 func SearchRedemptions(c *gin.Context) {
 	keyword := c.Query("keyword")
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := model.SearchRedemptions(keyword, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	redemptions, total, err := model.SearchRedemptions(keyword, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -47,7 +58,12 @@ func GetRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	redemption, err := model.GetRedemptionById(id)
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	redemption, err := model.GetRedemptionById(id, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -104,6 +120,8 @@ func AddRedemption(c *gin.Context) {
 			CreatedTime: common.GetTimestamp(),
 			Quota:       redemption.Quota,
 			ExpiredTime: redemption.ExpiredTime,
+			// Phase 2-D Review：写入当前管理员所属租户
+			TenantID: service.GetTenantID(c),
 		}
 		err = cleanRedemption.Insert()
 		if err != nil {
@@ -132,7 +150,12 @@ func AddRedemption(c *gin.Context) {
 
 func DeleteRedemption(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	err := model.DeleteRedemptionById(id)
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	err := model.DeleteRedemptionById(id, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -152,7 +175,12 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	cleanRedemption, err := model.GetRedemptionById(redemption.Id)
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	cleanRedemption, err := model.GetRedemptionById(redemption.Id, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -33,13 +33,14 @@ func buildMaskedTokenResponses(tokens []*model.Token) []*model.Token {
 
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
 	pageInfo := common.GetPageQuery(c)
-	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, err := model.GetAllUserTokens(userId, tenantId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	total, err := model.CountUserTokens(userId)
+	total, err := model.CountUserTokens(userId, tenantId)
 	if err != nil {
 		// P4-2 修复：禁止用 _ 丢弃 DB error，DB 失败时 total=0 会导致分页显示异常。
 		common.SysError(fmt.Sprintf("GetAllTokens: CountUserTokens failed user_id=%d err=%v", userId, err))
@@ -53,12 +54,13 @@ func GetAllTokens(c *gin.Context) {
 
 func SearchTokens(c *gin.Context) {
 	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
 	keyword := c.Query("keyword")
 	token := c.Query("token")
 
 	pageInfo := common.GetPageQuery(c)
 
-	tokens, total, err := model.SearchUserTokens(userId, keyword, token, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.SearchUserTokens(userId, tenantId, keyword, token, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -71,11 +73,12 @@ func SearchTokens(c *gin.Context) {
 func GetToken(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	token, err := model.GetTokenByIds(id, userId)
+	token, err := model.GetTokenByIds(id, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -86,11 +89,12 @@ func GetToken(c *gin.Context) {
 func GetTokenKey(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	token, err := model.GetTokenByIds(id, userId)
+	token, err := model.GetTokenByIds(id, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -103,7 +107,8 @@ func GetTokenKey(c *gin.Context) {
 func GetTokenStatus(c *gin.Context) {
 	tokenId := c.GetInt("token_id")
 	userId := c.GetInt("id")
-	token, err := model.GetTokenByIds(tokenId, userId)
+	tenantId := c.GetInt("tenant_id")
+	token, err := model.GetTokenByIds(tokenId, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -195,7 +200,7 @@ func AddToken(c *gin.Context) {
 	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
-	count, err := model.CountUserTokens(c.GetInt("id"))
+	count, err := model.CountUserTokens(c.GetInt("id"), c.GetInt("tenant_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -215,6 +220,7 @@ func AddToken(c *gin.Context) {
 	}
 	cleanToken := model.Token{
 		UserId:             c.GetInt("id"),
+		TenantID:           c.GetInt("tenant_id"),
 		Name:               token.Name,
 		Key:                key,
 		CreatedTime:        common.GetTimestamp(),
@@ -255,6 +261,7 @@ func DeleteToken(c *gin.Context) {
 
 func UpdateToken(c *gin.Context) {
 	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
 	statusOnly := c.Query("status_only")
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
@@ -277,7 +284,7 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
-	cleanToken, err := model.GetTokenByIds(token.Id, userId)
+	cleanToken, err := model.GetTokenByIds(token.Id, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -329,7 +336,8 @@ func DeleteTokenBatch(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
-	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId)
+	tenantId := c.GetInt("tenant_id")
+	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -352,7 +360,8 @@ func GetTokenKeysBatch(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
-	tokens, err := model.GetTokenKeysByIds(tokenBatch.Ids, userId)
+	tenantId := c.GetInt("tenant_id")
+	tokens, err := model.GetTokenKeysByIds(tokenBatch.Ids, userId, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return

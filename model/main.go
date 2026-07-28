@@ -351,6 +351,27 @@ func migrateDB() error {
 			return err
 		}
 	}
+
+	// 多租户迁移（第一阶段：仅 tenants / tenant_members 表 + users.current_tenant_id）
+	// 不修改任何业务表，不影响支付逻辑。
+	if err := migrateTenantSchema(); err != nil {
+		return err
+	}
+
+	// 多租户迁移（第二阶段 A：业务表 tokens/logs 增加 tenant_id 字段）
+	// 仅添加字段 + 回填历史数据，不修改任何查询逻辑。
+	// Phase 2-B 才会修改查询，加入 tenant_id 过滤。
+	if err := migrateTenantPhase2(); err != nil {
+		return err
+	}
+
+	// 多租户迁移（第二阶段 D：subscription/topup/redemption/task/midjourney 增加 tenant_id 字段）
+	// 仅添加字段 + 回填历史数据，不修改 Channel/Pricing/Vendor/Group，
+	// 不修改支付/Epay 流程与 Relay channel 选择逻辑。
+	if err := migrateTenantPhase2D(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

@@ -220,6 +220,8 @@ func UpdateMidjourneyTaskBulk(ctx context.Context) {
 							"task_id": task.MjId,
 							"reason":  "构图失败",
 						},
+						// Phase 2-B-2：MJ 异步路径无 c，走默认租户兜底
+						TenantId: model.DefaultTenantID,
 					}); err != nil {
 						// P4-5: MJ 退款审计日志写入失败不阻塞退款流程，但必须 SysError 记录上下文供对账。
 						common.SysError(fmt.Sprintf(
@@ -299,14 +301,20 @@ func GetAllMidjourney(c *gin.Context) {
 		EndTimestamp:   c.Query("end_timestamp"),
 	}
 
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+
 	// P4-3 修复：接收 error 以区分"无任务"与"DB 查询错误"
-	items, err := model.GetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	items, err := model.GetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams, tenantId)
 	if err != nil {
 		logger.LogError(c, fmt.Sprintf("GetAllMidjourney: GetAllTasks DB error err=%v", err))
 		common.ApiErrorMsg(c, "获取 Midjourney 任务列表失败")
 		return
 	}
-	total, err := model.CountAllTasks(queryParams)
+	total, err := model.CountAllTasks(queryParams, tenantId)
 	if err != nil {
 		logger.LogError(c, fmt.Sprintf("GetAllMidjourney: CountAllTasks DB error err=%v", err))
 		common.ApiErrorMsg(c, "获取 Midjourney 任务总数失败")
@@ -335,14 +343,20 @@ func GetUserMidjourney(c *gin.Context) {
 		EndTimestamp:   c.Query("end_timestamp"),
 	}
 
+	// Phase 2-D：用户视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+
 	// P4-3 修复：接收 error 以区分"无任务"与"DB 查询错误"
-	items, err := model.GetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	items, err := model.GetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams, tenantId)
 	if err != nil {
 		logger.LogError(c, fmt.Sprintf("GetUserMidjourney: GetAllUserTask DB error userId=%d err=%v", userId, err))
 		common.ApiErrorMsg(c, "获取用户 Midjourney 任务列表失败")
 		return
 	}
-	total, err := model.CountAllUserTask(userId, queryParams)
+	total, err := model.CountAllUserTask(userId, queryParams, tenantId)
 	if err != nil {
 		logger.LogError(c, fmt.Sprintf("GetUserMidjourney: CountAllUserTask DB error userId=%d err=%v", userId, err))
 		common.ApiErrorMsg(c, "获取用户 Midjourney 任务总数失败")

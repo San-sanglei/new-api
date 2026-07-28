@@ -61,7 +61,7 @@ func DoCheckin(c *gin.Context) {
 		})
 		return
 	}
-	if err := model.RecordLog(userId, model.LogTypeSystem, fmt.Sprintf("用户签到，获得额度 %s", logger.LogQuota(checkin.QuotaAwarded))); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, fmt.Sprintf("用户签到，获得额度 %s", logger.LogQuota(checkin.QuotaAwarded))); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,

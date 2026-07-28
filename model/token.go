@@ -14,6 +14,7 @@ import (
 type Token struct {
 	Id                 int            `json:"id"`
 	UserId             int            `json:"user_id" gorm:"index"`
+	TenantID           int            `json:"tenant_id" gorm:"type:int;default:1;index"` // 租户 ID（多租户第二阶段，Phase 2-A 仅加字段，查询隔离留待 2-B）
 	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
 	Status             int            `json:"status" gorm:"default:1;index"`
 	Name               string         `json:"name" gorm:"index" `
@@ -78,10 +79,12 @@ func (token *Token) GetIpLimits() []string {
 	return ipLimits
 }
 
-func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
+// GetAllUserTokens 获取用户在指定租户下的全部令牌
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func GetAllUserTokens(userId int, tenantId int, startIdx int, num int) ([]*Token, error) {
 	var tokens []*Token
 	var err error
-	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
+	err = DB.Where("user_id = ? AND tenant_id = ?", userId, tenantId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
 	return tokens, err
 }
 
@@ -124,7 +127,9 @@ func sanitizeLikePattern(input string) (string, error) {
 
 const searchHardLimit = 100
 
-func SearchUserTokens(userId int, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
+// SearchUserTokens 搜索用户在指定租户下的令牌
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func SearchUserTokens(userId int, tenantId int, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
 	// model 层强制截断
 	if limit <= 0 || limit > searchHardLimit {
 		limit = searchHardLimit
@@ -141,7 +146,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 	maxTokens := operation_setting.GetMaxUserTokens()
 	hasFuzzy := strings.Contains(keyword, "%") || strings.Contains(token, "%")
 	if hasFuzzy {
-		count, err := CountUserTokens(userId)
+		count, err := CountUserTokens(userId, tenantId)
 		if err != nil {
 			common.SysLog("failed to count user tokens: " + err.Error())
 			return nil, 0, errors.New("获取令牌数量失败")
@@ -151,7 +156,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 		}
 	}
 
-	baseQuery := DB.Model(&Token{}).Where("user_id = ?", userId)
+	baseQuery := DB.Model(&Token{}).Where("user_id = ? AND tenant_id = ?", userId, tenantId)
 
 	// 非空才加 LIKE 条件，空则跳过（不过滤该字段）
 	if keyword != "" {
@@ -225,13 +230,15 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	return nil, fmt.Errorf("%w: %v", ErrDatabase, err)
 }
 
-func GetTokenByIds(id int, userId int) (*Token, error) {
+// GetTokenByIds 按 id+userId+tenantId 查询令牌
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func GetTokenByIds(id int, userId int, tenantId int) (*Token, error) {
 	if id == 0 || userId == 0 {
 		return nil, errors.New("id 或 userId 为空！")
 	}
 	token := Token{Id: id, UserId: userId}
 	var err error = nil
-	err = DB.First(&token, "id = ? and user_id = ?", id, userId).Error
+	err = DB.First(&token, "id = ? and user_id = ? and tenant_id = ?", id, userId, tenantId).Error
 	return &token, err
 }
 
@@ -505,15 +512,17 @@ func DecreaseTokenQuotaSafe(id int, key string, quota int) (err error) {
 	return nil
 }
 
-// CountUserTokens returns total number of tokens for the given user, used for pagination
-func CountUserTokens(userId int) (int64, error) {
+// CountUserTokens returns total number of tokens for the given user in specified tenant, used for pagination
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func CountUserTokens(userId int, tenantId int) (int64, error) {
 	var total int64
-	err := DB.Model(&Token{}).Where("user_id = ?", userId).Count(&total).Error
+	err := DB.Model(&Token{}).Where("user_id = ? AND tenant_id = ?", userId, tenantId).Count(&total).Error
 	return total, err
 }
 
-// BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
-func BatchDeleteTokens(ids []int, userId int) (int, error) {
+// BatchDeleteTokens 删除指定用户在指定租户下的一组令牌，返回成功删除数量
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func BatchDeleteTokens(ids []int, userId int, tenantId int) (int, error) {
 	if len(ids) == 0 {
 		return 0, errors.New("ids 不能为空！")
 	}
@@ -521,12 +530,12 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	tx := DB.Begin()
 
 	var tokens []Token
-	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
+	if err := tx.Where("user_id = ? AND tenant_id = ? AND id IN (?)", userId, tenantId, ids).Find(&tokens).Error; err != nil {
 		tx.Rollback()
 		return 0, err
 	}
 
-	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Delete(&Token{}).Error; err != nil {
+	if err := tx.Where("user_id = ? AND tenant_id = ? AND id IN (?)", userId, tenantId, ids).Delete(&Token{}).Error; err != nil {
 		tx.Rollback()
 		return 0, err
 	}
@@ -546,10 +555,12 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	return len(tokens), nil
 }
 
-func GetTokenKeysByIds(ids []int, userId int) ([]Token, error) {
+// GetTokenKeysByIds 获取指定用户在指定租户下的一组令牌的 key
+// Phase 2-B-1：增加 tenantId 参数用于租户隔离
+func GetTokenKeysByIds(ids []int, userId int, tenantId int) ([]Token, error) {
 	var tokens []Token
 	err := DB.Select("id", commonKeyCol).
-		Where("user_id = ? AND id IN (?)", userId, ids).
+		Where("user_id = ? AND tenant_id = ? AND id IN (?)", userId, tenantId, ids).
 		Find(&tokens).Error
 	return tokens, err
 }

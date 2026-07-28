@@ -135,7 +135,7 @@ func UniversalVerify(c *gin.Context) {
 	}
 
 	// 记录日志
-	if err := model.RecordLog(userId, model.LogTypeSystem, fmt.Sprintf("通用安全验证成功 (验证方式: %s)", verifyMethod)); err != nil {
+	if err := model.RecordLog(c, userId, model.LogTypeSystem, fmt.Sprintf("通用安全验证成功 (验证方式: %s)", verifyMethod)); err != nil {
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
 			userId, model.LogTypeSystem, err,

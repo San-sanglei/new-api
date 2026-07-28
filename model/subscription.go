@@ -152,6 +152,9 @@ func InvalidateSubscriptionPlanCache(planId int) {
 type SubscriptionPlan struct {
 	Id int `json:"id"`
 
+	// Phase 2-D：套餐归属租户（默认租户=1，向后兼容）
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
+
 	Title    string `json:"title" gorm:"type:varchar(128);not null"`
 	Subtitle string `json:"subtitle" gorm:"type:varchar(255);default:''"`
 
@@ -214,6 +217,9 @@ type SubscriptionOrder struct {
 	PlanId int     `json:"plan_id" gorm:"index"`
 	Money  float64 `json:"money"`
 
+	// Phase 2-D：订单归属租户（默认租户=1，向后兼容）
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
+
 	TradeNo         string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
 	PaymentMethod   string `json:"payment_method" gorm:"type:varchar(50)"`
 	PaymentProvider string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
@@ -258,6 +264,9 @@ type UserSubscription struct {
 	Id     int `json:"id"`
 	UserId int `json:"user_id" gorm:"index;index:idx_user_sub_active,priority:1"`
 	PlanId int `json:"plan_id" gorm:"index"`
+
+	// Phase 2-D：订阅归属租户（默认租户=1，向后兼容）
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 
 	AmountTotal int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
 	AmountUsed  int64 `json:"amount_used" gorm:"type:bigint;not null;default:0"`
@@ -371,15 +380,22 @@ func calcNextResetTime(base time.Time, plan *SubscriptionPlan, endUnix int64) in
 }
 
 func GetSubscriptionPlanById(id int) (*SubscriptionPlan, error) {
-	return getSubscriptionPlanByIdTx(nil, id)
+	return getSubscriptionPlanByIdTx(nil, id, DefaultTenantID)
 }
 
-func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
+// GetSubscriptionPlanByIdWithTenant 返回指定租户下的套餐。
+// tenantId <= 0 表示 Root 跨租户查询（不加过滤）。
+func GetSubscriptionPlanByIdWithTenant(id int, tenantId int) (*SubscriptionPlan, error) {
+	return getSubscriptionPlanByIdTx(nil, id, tenantId)
+}
+
+func getSubscriptionPlanByIdTx(tx *gorm.DB, id int, tenantId int) (*SubscriptionPlan, error) {
 	if id <= 0 {
 		return nil, errors.New("invalid plan id")
 	}
 	key := subscriptionPlanCacheKey(id)
-	if key != "" {
+	if key != "" && tenantId <= 0 {
+		// 仅 Root 跨租户查询时使用缓存（普通租户查询走 DB 避免缓存跨租户命中）
 		if cached, found, err := getSubscriptionPlanCache().Get(key); err == nil && found {
 			cached.NormalizeDefaults()
 			return &cached, nil
@@ -393,8 +409,15 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 	if err := query.Where("id = ?", id).First(&plan).Error; err != nil {
 		return nil, err
 	}
+	// Phase 2-D：若指定 tenant，校验套餐所属租户
+	if tenantId > 0 && plan.TenantID > 0 && plan.TenantID != tenantId {
+		return nil, gorm.ErrRecordNotFound
+	}
 	plan.NormalizeDefaults()
-	_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	if tenantId <= 0 {
+		// 仅跨租户查询时回填缓存
+		_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	}
 	return &plan, nil
 }
 
@@ -423,14 +446,17 @@ func getSubscriptionPlanByIdTxNoCache(tx *gorm.DB, id int) (*SubscriptionPlan, e
 	return &plan, nil
 }
 
-func CountUserSubscriptionsByPlan(userId int, planId int) (int64, error) {
+func CountUserSubscriptionsByPlan(userId int, planId int, tenantId int) (int64, error) {
 	if userId <= 0 || planId <= 0 {
 		return 0, errors.New("invalid userId or planId")
 	}
 	var count int64
-	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND plan_id = ?", userId, planId).
-		Count(&count).Error; err != nil {
+	query := DB.Model(&UserSubscription{}).
+		Where("user_id = ? AND plan_id = ?", userId, planId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
+	if err := query.Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -485,7 +511,7 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	return prevGroup, nil
 }
 
-func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string) (*UserSubscription, error) {
+func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string, tenantId int) (*UserSubscription, error) {
 	if tx == nil {
 		return nil, errors.New("tx is nil")
 	}
@@ -495,11 +521,21 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if userId <= 0 {
 		return nil, errors.New("invalid user id")
 	}
+	// Phase 2-D：兜底 tenantId
+	if tenantId <= 0 {
+		tenantId = plan.TenantID
+	}
+	if tenantId <= 0 {
+		tenantId = DefaultTenantID
+	}
 	if plan.MaxPurchasePerUser > 0 {
 		var count int64
-		if err := tx.Model(&UserSubscription{}).
-			Where("user_id = ? AND plan_id = ?", userId, plan.Id).
-			Count(&count).Error; err != nil {
+		countQuery := tx.Model(&UserSubscription{}).
+			Where("user_id = ? AND plan_id = ?", userId, plan.Id)
+		if tenantId > 0 {
+			countQuery = countQuery.Where("tenant_id = ?", tenantId)
+		}
+		if err := countQuery.Count(&count).Error; err != nil {
 			return nil, err
 		}
 		if count >= int64(plan.MaxPurchasePerUser) {
@@ -536,6 +572,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	sub := &UserSubscription{
 		UserId:        userId,
 		PlanId:        plan.Id,
+		TenantID:      tenantId,
 		AmountTotal:   plan.TotalAmount,
 		AmountUsed:    0,
 		StartTime:     now.Unix(),
@@ -571,6 +608,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var logTenantID int = DefaultTenantID
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -594,7 +632,8 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			// still allow completion for already purchased orders
 		}
 		upgradeGroup = strings.TrimSpace(plan.UpgradeGroup)
-		_, err = CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order")
+		// Phase 2-D：使用订单已存的 tenant_id 同步给新订阅（跨租户支付场景兜底）
+		_, err = CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order", order.TenantID)
 		if err != nil {
 			return err
 		}
@@ -616,6 +655,10 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		logPlanTitle = plan.Title
 		logMoney = order.Money
 		logPaymentMethod = order.PaymentMethod
+		// Phase 2-D：保留订单的 tenant_id 供事务外写日志使用
+		if order.TenantID > 0 {
+			logTenantID = order.TenantID
+		}
 		return nil
 	})
 	if err != nil {
@@ -626,7 +669,8 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	}
 	if logUserId > 0 {
 		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
-		if logErr := RecordLog(logUserId, LogTypeTopup, msg); logErr != nil {
+		// Phase 2-D：使用订单已存的 tenant_id 写日志
+		if logErr := RecordLogWithTenant(logUserId, logTenantID, LogTypeTopup, msg); logErr != nil {
 			// P4-5：订阅已生效但日志未落库，运维需对账 user quota / 订阅状态。
 			common.SysError(fmt.Sprintf(
 				"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -654,6 +698,8 @@ func upsertSubscriptionTopUpTx(tx *gorm.DB, order *SubscriptionOrder) error {
 				CreateTime:    order.CreateTime,
 				CompleteTime:  now,
 				Status:        common.TopUpStatusSuccess,
+				// Phase 2-D：从订单同步 tenant_id（不改支付流程，仅传递字段）
+				TenantID: order.TenantID,
 			}
 			return tx.Create(&topup).Error
 		}
@@ -699,16 +745,17 @@ func ExpireSubscriptionOrder(tradeNo string, expectedPaymentProvider string) err
 }
 
 // Admin bind (no payment). Creates a UserSubscription from a plan.
-func AdminBindSubscription(userId int, planId int, sourceNote string) (string, error) {
+func AdminBindSubscription(userId int, planId int, sourceNote string, tenantId int) (string, error) {
 	if userId <= 0 || planId <= 0 {
 		return "", errors.New("invalid userId or planId")
 	}
-	plan, err := GetSubscriptionPlanById(planId)
+	// Phase 2-D：按租户校验套餐
+	plan, err := GetSubscriptionPlanByIdWithTenant(planId, tenantId)
 	if err != nil {
 		return "", err
 	}
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		_, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "admin")
+		_, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "admin", tenantId)
 		return err
 	})
 	if err != nil {
@@ -736,7 +783,8 @@ func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
 }
 
 // PurchaseSubscriptionWithBalance creates a subscription by deducting the user's wallet quota.
-func PurchaseSubscriptionWithBalance(userId int, planId int) error {
+// Phase 2-D：tenantId > 0 时按租户校验套餐；<= 0 时跨租户（Root）。
+func PurchaseSubscriptionWithBalance(userId int, planId int, tenantId int) error {
 	if userId <= 0 || planId <= 0 {
 		return errors.New("invalid userId or planId")
 	}
@@ -750,6 +798,10 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		plan, err := getSubscriptionPlanByIdTxNoCache(tx, planId)
 		if err != nil {
 			return err
+		}
+		// Phase 2-D：校验套餐所属租户
+		if tenantId > 0 && plan.TenantID > 0 && plan.TenantID != tenantId {
+			return errors.New("套餐不属于当前租户")
 		}
 		if !plan.Enabled {
 			return errors.New("套餐未启用")
@@ -780,7 +832,15 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			}
 		}
 
-		if _, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, PaymentMethodBalance); err != nil {
+		// Phase 2-D：写入 tenant_id（优先用传入的，兜底用套餐的）
+		subTenantId := tenantId
+		if subTenantId <= 0 {
+			subTenantId = plan.TenantID
+		}
+		if subTenantId <= 0 {
+			subTenantId = DefaultTenantID
+		}
+		if _, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, PaymentMethodBalance, subTenantId); err != nil {
 			return err
 		}
 
@@ -797,6 +857,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			CreateTime:      now,
 			CompleteTime:    now,
 			ProviderPayload: fmt.Sprintf("charged_quota=%d", requiredQuota),
+			TenantID:        subTenantId,
 		}
 		if err := tx.Create(order).Error; err != nil {
 			return err
@@ -827,7 +888,8 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		_ = UpdateUserGroupCache(userId, upgradeGroup)
 	}
 	msg := fmt.Sprintf("使用余额购买订阅成功，套餐: %s，支付金额: %.2f，扣除额度: %d", logPlanTitle, logMoney, chargedQuota)
-	if logErr := RecordLog(userId, LogTypeTopup, msg); logErr != nil {
+	// Phase 2-B-2：订阅路径无 c，走默认租户兜底
+	if logErr := RecordLogWithTenant(userId, DefaultTenantID, LogTypeTopup, msg); logErr != nil {
 		// P4-5：订阅已生效但日志未落库，运维需对账 user quota / 订阅状态。
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -838,14 +900,18 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 }
 
 // GetAllActiveUserSubscriptions returns all active subscriptions for a user.
-func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func GetAllActiveUserSubscriptions(userId int, tenantId int) ([]SubscriptionSummary, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
 	now := common.GetTimestamp()
+	query := DB.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	var subs []UserSubscription
-	err := DB.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-		Order("end_time desc, id desc").
+	err := query.Order("end_time desc, id desc").
 		Find(&subs).Error
 	if err != nil {
 		return nil, err
@@ -855,28 +921,36 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 
 // HasActiveUserSubscription returns whether the user has any active subscription.
 // This is a lightweight existence check to avoid heavy pre-consume transactions.
-func HasActiveUserSubscription(userId int) (bool, error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func HasActiveUserSubscription(userId int, tenantId int) (bool, error) {
 	if userId <= 0 {
 		return false, errors.New("invalid userId")
 	}
 	now := common.GetTimestamp()
 	var count int64
-	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-		Count(&count).Error; err != nil {
+	query := DB.Model(&UserSubscription{}).
+		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
+	if err := query.Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil
 }
 
 // GetAllUserSubscriptions returns all subscriptions (active and expired) for a user.
-func GetAllUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func GetAllUserSubscriptions(userId int, tenantId int) ([]SubscriptionSummary, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
+	query := DB.Where("user_id = ?", userId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	var subs []UserSubscription
-	err := DB.Where("user_id = ?", userId).
-		Order("end_time desc, id desc").
+	err := query.Order("end_time desc, id desc").
 		Find(&subs).Error
 	if err != nil {
 		return nil, err
@@ -899,7 +973,8 @@ func buildSubscriptionSummaries(subs []UserSubscription) []SubscriptionSummary {
 }
 
 // AdminInvalidateUserSubscription marks a user subscription as cancelled and ends it immediately.
-func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
+// Phase 2-D：tenantId > 0 时校验订阅所属租户；<= 0 时跨租户（Root）。
+func AdminInvalidateUserSubscription(userSubscriptionId int, tenantId int) (string, error) {
 	if userSubscriptionId <= 0 {
 		return "", errors.New("invalid userSubscriptionId")
 	}
@@ -909,8 +984,11 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 	var userId int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
+		query := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", userSubscriptionId)
+		if tenantId > 0 {
+			query = query.Where("tenant_id = ?", tenantId)
+		}
+		if err := query.First(&sub).Error; err != nil {
 			return err
 		}
 		userId = sub.UserId
@@ -944,7 +1022,8 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 }
 
 // AdminDeleteUserSubscription hard-deletes a user subscription.
-func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
+// Phase 2-D：tenantId > 0 时校验订阅所属租户；<= 0 时跨租户（Root）。
+func AdminDeleteUserSubscription(userSubscriptionId int, tenantId int) (string, error) {
 	if userSubscriptionId <= 0 {
 		return "", errors.New("invalid userSubscriptionId")
 	}
@@ -954,8 +1033,11 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
 	var userId int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
+		query := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", userSubscriptionId)
+		if tenantId > 0 {
+			query = query.Where("tenant_id = ?", tenantId)
+		}
+		if err := query.First(&sub).Error; err != nil {
 			return err
 		}
 		userId = sub.UserId
@@ -1095,6 +1177,9 @@ type SubscriptionPreConsumeRecord struct {
 	Status             string `json:"status" gorm:"type:varchar(32);index"` // consumed/refunded
 	CreatedAt          int64  `json:"created_at" gorm:"bigint"`
 	UpdatedAt          int64  `json:"updated_at" gorm:"bigint;index"`
+
+	// Phase 2-D：预扣费记录归属租户（默认租户=1，向后兼容）
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 }
 
 func (r *SubscriptionPreConsumeRecord) BeforeCreate(tx *gorm.DB) error {
@@ -1146,7 +1231,8 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 }
 
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
+// Phase 2-D：tenantId > 0 时按租户过滤订阅；<= 0 时跨租户查询（Root 或回调路径）。
+func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, tenantId int) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1183,9 +1269,12 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 
 		var subs []UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
+		subQuery := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now)
+		if tenantId > 0 {
+			subQuery = subQuery.Where("tenant_id = ?", tenantId)
+		}
+		if err := subQuery.Order("end_time asc, id asc").
 			Find(&subs).Error; err != nil {
 			return ErrNoActiveSubscription
 		}
@@ -1216,6 +1305,8 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				UserSubscriptionId: sub.Id,
 				PreConsumed:        amount,
 				Status:             "consumed",
+				// Phase 2-D：写入订阅所属租户
+				TenantID: sub.TenantID,
 			}
 			if err := tx.Create(record).Error; err != nil {
 				var dup SubscriptionPreConsumeRecord
@@ -1301,7 +1392,8 @@ func ResetDueSubscriptions(limit int) (int, error) {
 	resetCount := 0
 	for _, sub := range subs {
 		subCopy := sub
-		plan, err := getSubscriptionPlanByIdTx(nil, sub.PlanId)
+		// Phase 2-D：定时任务跨租户重置，使用 0 表示跨租户查询
+		plan, err := getSubscriptionPlanByIdTx(nil, sub.PlanId, 0)
 		if err != nil || plan == nil {
 			continue
 		}
@@ -1352,7 +1444,8 @@ func GetSubscriptionPlanInfoByUserSubscriptionId(userSubscriptionId int) (*Subsc
 	if err := DB.Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
 		return nil, err
 	}
-	plan, err := getSubscriptionPlanByIdTx(nil, sub.PlanId)
+	// Phase 2-D：info 缓存按订阅所属租户读取
+	plan, err := getSubscriptionPlanByIdTx(nil, sub.PlanId, sub.TenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -16,7 +16,18 @@ func GetSubscription(c *gin.Context) {
 	var expiredTime int64
 	if common.DisplayTokenStatEnabled {
 		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
+		// Phase 2-C：使用 GetTokenByIds 进行租户隔离校验
+		token, err = model.GetTokenByIds(tokenId, c.GetInt("id"), c.GetInt("tenant_id"))
+		if err != nil {
+			openAIError := types.OpenAIError{
+				Message: err.Error(),
+				Type:    "upstream_error",
+			}
+			c.JSON(200, gin.H{
+				"error": openAIError,
+			})
+			return
+		}
 		expiredTime = token.ExpiredTime
 		remainQuota = token.RemainQuota
 		usedQuota = token.UsedQuota
@@ -96,7 +107,18 @@ func GetUsage(c *gin.Context) {
 	var token *model.Token
 	if common.DisplayTokenStatEnabled {
 		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
+		// Phase 2-C：使用 GetTokenByIds 进行租户隔离校验
+		token, err = model.GetTokenByIds(tokenId, c.GetInt("id"), c.GetInt("tenant_id"))
+		if err != nil {
+			openAIError := types.OpenAIError{
+				Message: err.Error(),
+				Type:    "new_api_error",
+			}
+			c.JSON(200, gin.H{
+				"error": openAIError,
+			})
+			return
+		}
 		quota = token.UsedQuota
 	} else {
 		userId := c.GetInt("id")

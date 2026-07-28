@@ -96,6 +96,12 @@ type RelayInfo struct {
 	StartTime         time.Time
 	FirstResponseTime time.Time
 	isFirstResponse   bool
+
+	// Phase 2-D：请求所属租户 ID。
+	// 由 genBaseRelayInfo 从 gin.Context 读取 ContextKeyTenantId 填充；
+	// 异步任务路径（Task/Midjourney）通过 InitTask / mjproxy_handler 透传给业务表。
+	// 未命中时为 0，由调用方兜底为 model.DefaultTenantID。
+	TenantID int
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -469,6 +475,8 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
 		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
 		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		// Phase 2-D：从 context 读取 tenant_id，未命中走 0（由调用方兜底为 DefaultTenantID）
+		TenantID: common.GetContextKeyInt(c, constant.ContextKeyTenantId),
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 

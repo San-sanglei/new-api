@@ -297,6 +297,8 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       priceData.Quota,
+		// Phase 2-D：从 RelayInfo 透传 tenant_id
+		TenantID: info.TenantID,
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -653,6 +655,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       priceData.Quota,
+		// Phase 2-D：从 RelayInfo 透传 tenant_id
+		TenantID: relayInfo.TenantID,
 	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）

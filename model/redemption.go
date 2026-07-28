@@ -24,9 +24,16 @@ type Redemption struct {
 	UsedUserId   int            `json:"used_user_id"`
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 	ExpiredTime  int64          `json:"expired_time" gorm:"bigint"` // 过期时间，0 表示不过期
+
+	// Phase 2-D：兑换码归属租户（默认租户=1，向后兼容）
+	// 说明：仅在 admin 列表/详情/删除路径按租户过滤；
+	// 兑换路径 Redeem 保持全局兑换语义，不加 tenant 过滤。
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 }
 
-func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
+// GetAllRedemptions 获取兑换码列表
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户（Root）
+func GetAllRedemptions(startIdx int, num int, tenantId int) (redemptions []*Redemption, total int64, err error) {
 	// 开始事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -39,14 +46,22 @@ func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total 
 	}()
 
 	// 获取总数
-	err = tx.Model(&Redemption{}).Count(&total).Error
+	countQuery := tx.Model(&Redemption{})
+	if tenantId > 0 {
+		countQuery = countQuery.Where("tenant_id = ?", tenantId)
+	}
+	err = countQuery.Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
 	// 获取分页数据
-	err = tx.Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
+	listQuery := tx.Model(&Redemption{})
+	if tenantId > 0 {
+		listQuery = listQuery.Where("tenant_id = ?", tenantId)
+	}
+	err = listQuery.Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
@@ -60,7 +75,9 @@ func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total 
 	return redemptions, total, nil
 }
 
-func SearchRedemptions(keyword string, startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
+// SearchRedemptions 按关键词搜索兑换码
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户（Root）
+func SearchRedemptions(keyword string, startIdx int, num int, tenantId int) (redemptions []*Redemption, total int64, err error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -73,6 +90,9 @@ func SearchRedemptions(keyword string, startIdx int, num int) (redemptions []*Re
 
 	// Build query based on keyword type
 	query := tx.Model(&Redemption{})
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 
 	// Only try to convert to ID if the string represents a valid integer
 	if id, err := strconv.Atoi(keyword); err == nil {
@@ -102,13 +122,18 @@ func SearchRedemptions(keyword string, startIdx int, num int) (redemptions []*Re
 	return redemptions, total, nil
 }
 
-func GetRedemptionById(id int) (*Redemption, error) {
+// GetRedemptionById 按主键查询兑换码
+// Phase 2-D：tenantId > 0 时校验所属租户；<= 0 时跨租户（Root，如支付回调场景）
+func GetRedemptionById(id int, tenantId int) (*Redemption, error) {
 	if id == 0 {
 		return nil, errors.New("id 为空！")
 	}
 	redemption := Redemption{Id: id}
-	var err error = nil
-	err = DB.First(&redemption, "id = ?", id).Error
+	query := DB
+	if tenantId > 0 {
+		query = DB.Where("tenant_id = ?", tenantId)
+	}
+	err := query.First(&redemption, "id = ?", id).Error
 	return &redemption, err
 }
 
@@ -151,7 +176,8 @@ func Redeem(key string, userId int) (quota int, err error) {
 		common.SysError("redemption failed: " + err.Error())
 		return 0, ErrRedeemFailed
 	}
-	if logErr := RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id)); logErr != nil {
+	// Phase 2-B-2：兑换码路径无 c，走默认租户兜底（兑换码是用户主动操作，租户上下文应在调用方）
+	if logErr := RecordLogWithTenant(userId, DefaultTenantID, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id)); logErr != nil {
 		// P4-5：充值已到账但日志未落库，运维需对账 user quota 是否一致。
 		common.SysError(fmt.Sprintf(
 			"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",
@@ -185,12 +211,18 @@ func (redemption *Redemption) Delete() error {
 	return err
 }
 
-func DeleteRedemptionById(id int) (err error) {
+// DeleteRedemptionById 按 ID 删除兑换码
+// Phase 2-D：tenantId > 0 时校验所属租户；<= 0 时跨租户（Root）
+func DeleteRedemptionById(id int, tenantId int) (err error) {
 	if id == 0 {
 		return errors.New("id 为空！")
 	}
 	redemption := Redemption{Id: id}
-	err = DB.Where(redemption).First(&redemption).Error
+	query := DB.Where(redemption)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
+	err = query.First(&redemption).Error
 	if err != nil {
 		return err
 	}

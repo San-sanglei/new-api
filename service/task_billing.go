@@ -204,6 +204,8 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 		TokenId:   task.PrivateData.TokenId,
 		Group:     task.Group,
 		Other:     other,
+		// Phase 2-B-2：异步路径无 c，走默认租户兜底
+		TenantId: model.DefaultTenantID,
 	}); err != nil {
 		// P4-5: 审计日志写入失败不阻塞退款流程，但必须 SysError 记录完整上下文供对账。
 		// 注意：partial_refund / token_adjust_error 等标记已通过 Other 携带，若日志未落库，
@@ -294,6 +296,8 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		TokenId:   task.PrivateData.TokenId,
 		Group:     task.Group,
 		Other:     other,
+		// Phase 2-B-2：异步路径无 c，走默认租户兜底
+		TenantId: model.DefaultTenantID,
 	}); err != nil {
 		// P4-5: 审计日志写入失败不阻塞结算流程，但必须 SysError 记录完整上下文供对账。
 		// partial_settle / task_quota_updated / token_adjust_error 等关键对账标记已通过 Other 携带。

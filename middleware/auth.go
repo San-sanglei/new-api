@@ -153,6 +153,35 @@ func authHelper(c *gin.Context, minRole int) {
 	c.Set("user_group", session.Get("group"))
 	c.Set("use_access_token", useAccessToken)
 
+	// 写入当前活动租户 ID 到 context（多租户第一阶段）
+	// Phase 2-C：session 路径优先读 session 中的 tenant_id（由 setupLogin 写入），
+	// 缺失或异常时再回退到 DB 查询 GetUserCurrentTenantId。
+	// access token 路径走 ValidateAccessToken 拿到 user 对象，仍走 DB 查询分支。
+	// 查询失败或用户无租户时回退到默认租户（id=1）。
+	if id != nil {
+		uid, _ := id.(int)
+		if uid > 0 {
+			tenantId := 0
+			if !useAccessToken {
+				// session 路径优先读 session
+				if v := session.Get("tenant_id"); v != nil {
+					if tid, ok := v.(int); ok && tid > 0 {
+						tenantId = tid
+					}
+				}
+			}
+			if tenantId == 0 {
+				tid, terr := model.GetUserCurrentTenantId(uid)
+				if terr != nil || tid <= 0 {
+					tenantId = model.DefaultTenantID
+				} else {
+					tenantId = tid
+				}
+			}
+			c.Set(string(constant.ContextKeyTenantId), tenantId)
+		}
+	}
+
 	// 管理/root 写操作审计兜底：内聚在鉴权链路里，保证任何经过 AdminAuth/RootAuth
 	// 的写接口都会自动留痕（无需在路由上单独挂审计中间件，避免漏挂）。
 	// handler 内手动埋点者会设置 ContextKeyAuditLogged，finishAdminAudit 据此跳过。
@@ -279,6 +308,9 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		c.Set("id", token.UserId)
 		c.Set("token_id", token.Id)
 		c.Set("token_key", token.Key)
+		// Phase 2-C：从 token 写入 tenant_id 到 context，
+		// 供下游只读接口（如 billing）使用 token 所属租户。
+		common.SetContextKey(c, constant.ContextKeyTenantId, token.TenantID)
 		c.Next()
 	}
 }

@@ -175,8 +175,10 @@ func finishAdminAudit(c *gin.Context, writer *auditResponseWriter) {
 		auditInfo["params"] = routeParams
 	}
 
+	// Phase 2-B-2：goroutine 启动前从 c 取好 tenant_id，避免 goroutine 内访问 c 不安全
+	tenantId := c.GetInt("tenant_id")
 	gopool.Go(func() {
-		model.RecordOperationAuditLog(operatorId, content, ip, action, opParams, adminInfo, auditInfo)
+		model.RecordOperationAuditLog(operatorId, content, ip, action, opParams, adminInfo, auditInfo, tenantId)
 	})
 }
 

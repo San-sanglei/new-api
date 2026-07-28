@@ -32,6 +32,11 @@ type Midjourney struct {
 	Quota       int    `json:"quota"`
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
+
+	// Phase 2-D：任务归属租户（默认租户=1，向后兼容）
+	// 写入：mjproxy_handler 创建任务时从 RelayInfo.TenantID 获取
+	// 查询：admin/用户列表按 tenant_id 过滤；轮询路径不过滤
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -46,11 +51,16 @@ type TaskQueryParams struct {
 // P4-3 修复：返回 ([]*Midjourney, error) 以区分"无任务"与"DB 查询错误"。
 // - 查询成功（含空结果）：返回 (tasks, nil)
 // - DB error：返回 (nil, error)
-func GetAllUserTask(userId int, startIdx int, num int, queryParams TaskQueryParams) ([]*Midjourney, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func GetAllUserTask(userId int, startIdx int, num int, queryParams TaskQueryParams, tenantId int) ([]*Midjourney, error) {
 	var tasks []*Midjourney
 
 	// 初始化查询构建器
 	query := DB.Where("user_id = ?", userId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 
 	if queryParams.MjID != "" {
 		query = query.Where("mj_id = ?", queryParams.MjID)
@@ -76,11 +86,16 @@ func GetAllUserTask(userId int, startIdx int, num int, queryParams TaskQueryPara
 // P4-3 修复：返回 ([]*Midjourney, error) 以区分"无任务"与"DB 查询错误"。
 // - 查询成功（含空结果）：返回 (tasks, nil)
 // - DB error：返回 (nil, error)
-func GetAllTasks(startIdx int, num int, queryParams TaskQueryParams) ([]*Midjourney, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）。
+func GetAllTasks(startIdx int, num int, queryParams TaskQueryParams, tenantId int) ([]*Midjourney, error) {
 	var tasks []*Midjourney
 
 	// 初始化查询构建器
 	query := DB
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 
 	// 添加过滤条件
 	if queryParams.ChannelID != "" {
@@ -219,9 +234,14 @@ func MjBulkUpdateByTaskIds(taskIDs []int, params map[string]any) error {
 // P4-3 修复：返回 (int64, error) 以区分"0 任务"与"DB 查询错误"。
 // - 统计成功：返回 (total, nil)
 // - DB error：返回 (0, error)，避免调用方用 0 当作真实数据
-func CountAllTasks(queryParams TaskQueryParams) (int64, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）
+func CountAllTasks(queryParams TaskQueryParams, tenantId int) (int64, error) {
 	var total int64
 	query := DB.Model(&Midjourney{})
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if queryParams.ChannelID != "" {
 		query = query.Where("channel_id = ?", queryParams.ChannelID)
 	}
@@ -245,9 +265,14 @@ func CountAllTasks(queryParams TaskQueryParams) (int64, error) {
 // P4-3 修复：返回 (int64, error) 以区分"0 任务"与"DB 查询错误"。
 // - 统计成功：返回 (total, nil)
 // - DB error：返回 (0, error)，避免调用方用 0 当作真实数据
-func CountAllUserTask(userId int, queryParams TaskQueryParams) (int64, error) {
+//
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户查询（Root）
+func CountAllUserTask(userId int, queryParams TaskQueryParams, tenantId int) (int64, error) {
 	var total int64
 	query := DB.Model(&Midjourney{}).Where("user_id = ?", userId)
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if queryParams.MjID != "" {
 		query = query.Where("mj_id = ?", queryParams.MjID)
 	}

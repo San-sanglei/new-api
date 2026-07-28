@@ -31,7 +31,8 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		return
 	}
 
-	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	// Phase 2-D Review：按当前用户租户校验套餐，避免跨租户购买
+	plan, err := model.GetSubscriptionPlanByIdWithTenant(req.PlanId, service.GetTenantID(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -64,7 +65,8 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	}
 
 	if plan.MaxPurchasePerUser > 0 {
-		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id)
+		// Phase 2-D：按租户统计用户已购订阅
+		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id, service.GetTenantID(c))
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -88,6 +90,8 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderWaffoPancake,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// Phase 2-D Review：写入当前用户所属租户
+		TenantID: service.GetTenantID(c),
 	}
 	if err := order.Insert(); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 订阅订单创建失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, err.Error()))

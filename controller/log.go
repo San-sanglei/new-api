@@ -22,7 +22,12 @@ func GetAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
+	// Phase 2-B-2：root 用户跨租户，普通 admin 限本租户
+	tenantId := 0
+	if c.GetInt("role") < common.RoleRootUser {
+		tenantId = c.GetInt("tenant_id")
+	}
+	logs, total, err := model.GetAllLogs(logType, tenantId, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -44,7 +49,9 @@ func GetUserLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetUserLogs(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), group, requestId, upstreamRequestId)
+	// Phase 2-B-2：用户视角按当前租户隔离
+	tenantId := c.GetInt("tenant_id")
+	logs, total, err := model.GetUserLogs(userId, tenantId, logType, startTimestamp, endTimestamp, modelName, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), group, requestId, upstreamRequestId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -80,6 +87,17 @@ func GetLogByKey(c *gin.Context) {
 		})
 		return
 	}
+	// Phase 2-C：校验 token 是否属于当前用户和当前租户，
+	// 防止通过 token_id 跨租户查询日志。
+	userId := c.GetInt("id")
+	tenantId := c.GetInt("tenant_id")
+	if _, err := model.GetTokenByIds(tokenId, userId, tenantId); err != nil {
+		c.JSON(200, gin.H{
+			"success": false,
+			"message": "无权访问该令牌",
+		})
+		return
+	}
 	logs, err := model.GetLogByTokenId(tokenId)
 	if err != nil {
 		c.JSON(200, gin.H{
@@ -104,7 +122,12 @@ func GetLogsStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	// Phase 2-B-2：root 用户跨租户，普通 admin 限本租户
+	tenantId := 0
+	if c.GetInt("role") < common.RoleRootUser {
+		tenantId = c.GetInt("tenant_id")
+	}
+	stat, err := model.SumUsedQuota(logType, tenantId, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -131,7 +154,9 @@ func GetLogsSelfStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	// Phase 2-B-2：用户视角按当前租户隔离
+	tenantId := c.GetInt("tenant_id")
+	quotaNum, err := model.SumUsedQuota(logType, tenantId, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
 	if err != nil {
 		common.ApiError(c, err)
 		return

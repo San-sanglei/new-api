@@ -22,6 +22,10 @@ type TopUp struct {
 	CreateTime      int64   `json:"create_time"`
 	CompleteTime    int64   `json:"complete_time"`
 	Status          string  `json:"status"`
+
+	// Phase 2-D：充值订单归属租户（默认租户=1，向后兼容）
+	// 不影响支付/Epay 流程，仅在创建时由调用方填充，查询时按租户过滤。
+	TenantID int `json:"tenant_id" gorm:"type:int;default:1;index"`
 }
 
 const (
@@ -160,7 +164,8 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		return errors.New("充值失败，请稍后重试")
 	}
 
-	RecordTopupLog(topUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount), callerIp, topUp.PaymentMethod, PaymentMethodStripe)
+	// Phase 2-D：使用订单已存的 tenant_id 写日志（不改支付流程）
+	RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount), callerIp, topUp.PaymentMethod, PaymentMethodStripe)
 
 	return nil
 }
@@ -173,7 +178,8 @@ func topUpQueryCutoff() int64 {
 	return common.GetTimestamp() - topUpQueryWindowSeconds
 }
 
-func GetUserTopUps(userId int, pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
+// GetUserTopUps 获取某用户的充值记录（Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户 Root）
+func GetUserTopUps(userId int, tenantId int, pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
 	// Start transaction
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -188,14 +194,22 @@ func GetUserTopUps(userId int, pageInfo *common.PageInfo) (topups []*TopUp, tota
 	cutoff := topUpQueryCutoff()
 
 	// Get total count within transaction
-	err = tx.Model(&TopUp{}).Where("user_id = ? AND create_time >= ?", userId, cutoff).Count(&total).Error
+	countQuery := tx.Model(&TopUp{}).Where("user_id = ? AND create_time >= ?", userId, cutoff)
+	if tenantId > 0 {
+		countQuery = countQuery.Where("tenant_id = ?", tenantId)
+	}
+	err = countQuery.Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
 	// Get paginated topups within same transaction
-	err = tx.Where("user_id = ? AND create_time >= ?", userId, cutoff).Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&topups).Error
+	listQuery := tx.Where("user_id = ? AND create_time >= ?", userId, cutoff)
+	if tenantId > 0 {
+		listQuery = listQuery.Where("tenant_id = ?", tenantId)
+	}
+	err = listQuery.Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&topups).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
@@ -210,7 +224,8 @@ func GetUserTopUps(userId int, pageInfo *common.PageInfo) (topups []*TopUp, tota
 }
 
 // GetAllTopUps 获取全平台的充值记录（管理员使用，不限制时间窗口）
-func GetAllTopUps(pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户（Root）
+func GetAllTopUps(pageInfo *common.PageInfo, tenantId int) (topups []*TopUp, total int64, err error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -221,12 +236,20 @@ func GetAllTopUps(pageInfo *common.PageInfo) (topups []*TopUp, total int64, err 
 		}
 	}()
 
-	if err = tx.Model(&TopUp{}).Count(&total).Error; err != nil {
+	countQuery := tx.Model(&TopUp{})
+	if tenantId > 0 {
+		countQuery = countQuery.Where("tenant_id = ?", tenantId)
+	}
+	if err = countQuery.Count(&total).Error; err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
-	if err = tx.Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&topups).Error; err != nil {
+	listQuery := tx.Model(&TopUp{})
+	if tenantId > 0 {
+		listQuery = listQuery.Where("tenant_id = ?", tenantId)
+	}
+	if err = listQuery.Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&topups).Error; err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
@@ -243,7 +266,8 @@ func GetAllTopUps(pageInfo *common.PageInfo) (topups []*TopUp, total int64, err 
 const searchTopUpCountHardLimit = 10000
 
 // SearchUserTopUps 按订单号搜索某用户的充值记录
-func SearchUserTopUps(userId int, keyword string, pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户（Root）
+func SearchUserTopUps(userId int, tenantId int, keyword string, pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -255,6 +279,9 @@ func SearchUserTopUps(userId int, keyword string, pageInfo *common.PageInfo) (to
 	}()
 
 	query := tx.Model(&TopUp{}).Where("user_id = ? AND create_time >= ?", userId, topUpQueryCutoff())
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if keyword != "" {
 		pattern, perr := sanitizeLikePattern(keyword)
 		if perr != nil {
@@ -283,7 +310,8 @@ func SearchUserTopUps(userId int, keyword string, pageInfo *common.PageInfo) (to
 }
 
 // SearchAllTopUps 按订单号搜索全平台充值记录（管理员使用，不限制时间窗口）
-func SearchAllTopUps(keyword string, pageInfo *common.PageInfo) (topups []*TopUp, total int64, err error) {
+// Phase 2-D：tenantId > 0 时按租户过滤；<= 0 时跨租户（Root）
+func SearchAllTopUps(keyword string, pageInfo *common.PageInfo, tenantId int) (topups []*TopUp, total int64, err error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -295,6 +323,9 @@ func SearchAllTopUps(keyword string, pageInfo *common.PageInfo) (topups []*TopUp
 	}()
 
 	query := tx.Model(&TopUp{})
+	if tenantId > 0 {
+		query = query.Where("tenant_id = ?", tenantId)
+	}
 	if keyword != "" {
 		pattern, perr := sanitizeLikePattern(keyword)
 		if perr != nil {
@@ -337,6 +368,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 	var quotaToAdd int
 	var payMoney float64
 	var paymentMethod string
+	var topUpTenantID int = DefaultTenantID
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		topUp := &TopUp{}
@@ -384,6 +416,10 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		userId = topUp.UserId
 		payMoney = topUp.Money
 		paymentMethod = topUp.PaymentMethod
+		// Phase 2-D：保留订单 tenant_id 用于事务外日志
+		if topUp.TenantID > 0 {
+			topUpTenantID = topUp.TenantID
+		}
 		return nil
 	})
 
@@ -392,7 +428,8 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 	}
 
 	// 事务外记录日志，避免阻塞
-	RecordTopupLog(userId, fmt.Sprintf("管理员补单成功，充值金额: %v，支付金额：%f", logger.FormatQuota(quotaToAdd), payMoney), callerIp, paymentMethod, "admin")
+	// Phase 2-D：使用订单已存的 tenant_id 写日志
+	RecordTopupLogWithTenant(userId, topUpTenantID, fmt.Sprintf("管理员补单成功，充值金额: %v，支付金额：%f", logger.FormatQuota(quotaToAdd), payMoney), callerIp, paymentMethod, "admin")
 	return nil
 }
 func RechargeCreem(referenceId string, customerEmail string, customerName string, callerIp string) (err error) {
@@ -465,7 +502,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		return errors.New("充值失败，请稍后重试")
 	}
 
-	RecordTopupLog(topUp.UserId, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodCreem)
+	RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodCreem)
 
 	return nil
 }
@@ -527,7 +564,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 	}
 
 	if quotaToAdd > 0 {
-		RecordTopupLog(topUp.UserId, fmt.Sprintf("Waffo充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodWaffo)
+		RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("Waffo充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodWaffo)
 	}
 
 	return nil
@@ -588,7 +625,8 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 	}
 
 	if quotaToAdd > 0 {
-		if logErr := RecordLog(topUp.UserId, LogTypeTopup, fmt.Sprintf("Waffo Pancake充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money)); logErr != nil {
+		// Phase 2-D：Waffo Pancake 回调路径无 c，使用订单已存的 tenant_id 写日志（不改支付流程）
+		if logErr := RecordLogWithTenant(topUp.UserId, topUp.TenantID, LogTypeTopup, fmt.Sprintf("Waffo Pancake充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money)); logErr != nil {
 			// P4-5：充值已到账但日志未落库，运维需对账 user quota 是否一致。
 			common.SysError(fmt.Sprintf(
 				"RecordLog failed: log_persist_required=true, user_id=%d, log_type=%d, err=%v",

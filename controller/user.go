@@ -131,9 +131,15 @@ func recordLoginAudit(user *model.User, c *gin.Context) {
 		"user_agent":   c.Request.UserAgent(),
 	}
 	content := fmt.Sprintf("Logged in successfully via %s", method)
+	// Phase 2-B-2：登录时刻 tenant_id 尚未通过 middleware 写入 context（login 在 auth 之前），
+	// 走 user.CurrentTenantID 兜底；若用户首次登录且未设置，回退到 DefaultTenantID。
+	tenantId := model.DefaultTenantID
+	if user.CurrentTenantID > 0 {
+		tenantId = user.CurrentTenantID
+	}
 	model.RecordLoginLog(user.Id, user.Username, content, ip, "login", map[string]interface{}{
 		"method": method,
-	}, extra)
+	}, extra, tenantId)
 }
 
 // setup session & cookies and then return user info
@@ -145,6 +151,9 @@ func setupLogin(user *model.User, c *gin.Context) {
 	session.Set("role", user.Role)
 	session.Set("status", user.Status)
 	session.Set("group", user.Group)
+	// Phase 2-C：session 保存 tenant_id，避免后续每次请求都查 DB。
+	// middleware/auth.go 在 session 路径优先读取该值。
+	session.Set("tenant_id", user.CurrentTenantID)
 	err := session.Save()
 	if err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUserSessionSaveFailed)
@@ -282,7 +291,12 @@ func Register(c *gin.Context) {
 
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	users, total, err := model.GetAllUsers(pageInfo)
+	// Phase 2-D：管理员视角按租户隔离。超级管理员（Root）传 0 表示跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	users, total, err := model.GetAllUsers(pageInfo, tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -311,7 +325,12 @@ func SearchUsers(c *gin.Context) {
 		}
 	}
 	pageInfo := common.GetPageQuery(c)
-	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	// Phase 2-D：管理员视角按租户隔离。超级管理员（Root）传 0 表示跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), tenantId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -342,6 +361,15 @@ func GetUser(c *gin.Context) {
 	if !canManageTargetRole(myRole, user.Role) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
 		return
+	}
+	// Phase 2-D：管理员视角按租户隔离。普通管理员只能查看本租户用户；
+	// 超级管理员（Root）可跨租户查看。GetUserById 等身份查询保持全局，不受影响。
+	if !service.IsSuperAdmin(c) {
+		tenantId := service.GetTenantID(c)
+		if tenantId > 0 && user.CurrentTenantID > 0 && user.CurrentTenantID != tenantId {
+			common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

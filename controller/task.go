@@ -39,14 +39,20 @@ func GetAllTask(c *gin.Context) {
 		ChannelID:      c.Query("channel_id"),
 	}
 
-	items, err := model.TaskGetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+
+	items, err := model.TaskGetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams, tenantId)
 	if err != nil {
 		// P4-5 修复：DB error 时返回数据库错误响应，避免前端误以为"无任务"。
 		common.SysError(fmt.Sprintf("GetAllTask: TaskGetAllTasks DB error: %v", err))
 		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
 		return
 	}
-	total := model.TaskCountAllTasks(queryParams)
+	total := model.TaskCountAllTasks(queryParams, tenantId)
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(tasksToDto(items, true))
 	common.ApiSuccess(c, pageInfo)
@@ -69,14 +75,20 @@ func GetUserTask(c *gin.Context) {
 		EndTimestamp:   endTimestamp,
 	}
 
-	items, err := model.TaskGetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	// Phase 2-D：用户视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
+
+	items, err := model.TaskGetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams, tenantId)
 	if err != nil {
 		// P4-5 修复：DB error 时返回数据库错误响应，避免前端误以为"无任务"。
 		common.SysError(fmt.Sprintf("GetUserTask: TaskGetAllUserTask DB error: user_id=%d, err=%v", userId, err))
 		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
 		return
 	}
-	total := model.TaskCountAllUserTask(userId, queryParams)
+	total := model.TaskCountAllUserTask(userId, queryParams, tenantId)
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(tasksToDto(items, false))
 	common.ApiSuccess(c, pageInfo)

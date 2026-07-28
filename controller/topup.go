@@ -258,6 +258,8 @@ func RequestEpay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderEpay,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// Phase 2-D：写入当前用户所属租户，不改支付/Epay 流程
+		TenantID: service.GetTenantID(c),
 	}
 	err = topUp.Insert()
 	if err != nil {
@@ -455,6 +457,11 @@ func GetUserTopUps(c *gin.Context) {
 	userId := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
 	keyword := c.Query("keyword")
+	// Phase 2-D：用户视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
 
 	var (
 		topups []*model.TopUp
@@ -462,9 +469,9 @@ func GetUserTopUps(c *gin.Context) {
 		err    error
 	)
 	if keyword != "" {
-		topups, total, err = model.SearchUserTopUps(userId, keyword, pageInfo)
+		topups, total, err = model.SearchUserTopUps(userId, tenantId, keyword, pageInfo)
 	} else {
-		topups, total, err = model.GetUserTopUps(userId, pageInfo)
+		topups, total, err = model.GetUserTopUps(userId, tenantId, pageInfo)
 	}
 	if err != nil {
 		common.ApiError(c, err)
@@ -480,6 +487,11 @@ func GetUserTopUps(c *gin.Context) {
 func GetAllTopUps(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	keyword := c.Query("keyword")
+	// Phase 2-D：管理员视角按租户过滤。Root 走跨租户查询。
+	tenantId := 0
+	if !service.IsSuperAdmin(c) {
+		tenantId = service.GetTenantID(c)
+	}
 
 	var (
 		topups []*model.TopUp
@@ -487,9 +499,9 @@ func GetAllTopUps(c *gin.Context) {
 		err    error
 	)
 	if keyword != "" {
-		topups, total, err = model.SearchAllTopUps(keyword, pageInfo)
+		topups, total, err = model.SearchAllTopUps(keyword, pageInfo, tenantId)
 	} else {
-		topups, total, err = model.GetAllTopUps(pageInfo)
+		topups, total, err = model.GetAllTopUps(pageInfo, tenantId)
 	}
 	if err != nil {
 		common.ApiError(c, err)

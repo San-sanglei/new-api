@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"io"
 	"net/http"
@@ -121,6 +122,8 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 		PaymentProvider: model.PaymentProviderCreem,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// Phase 2-D Review：写入当前用户所属租户
+		TenantID: service.GetTenantID(c),
 	}
 	err = topUp.Insert()
 	if err != nil {
