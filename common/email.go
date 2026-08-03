@@ -1,104 +1,128 @@
 package common
 
 import (
-	"crypto/tls"
-	"encoding/base64"
+	"context"
+	"errors"
 	"fmt"
-	"net/smtp"
-	"slices"
+	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
+	"github.com/aws/smithy-go"
 )
 
-func generateMessageID() (string, error) {
-	split := strings.Split(SMTPFrom, "@")
-	if len(split) < 2 {
-		return "", fmt.Errorf("invalid SMTP account")
-	}
-	domain := strings.Split(SMTPFrom, "@")[1]
-	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), domain), nil
+// SES 发信超时时间，避免 Render 等环境下接口挂起无响应
+const sesSendTimeout = 10 * time.Second
+
+var (
+	sesClientOnce sync.Once
+	sesClient     *sesv2.Client
+	sesClientErr  error
+)
+
+// getSESClient 懒加载 SESv2 客户端（仅初始化一次）。
+// 凭证从环境变量读取：
+//   - AWS_REGION
+//   - AWS_ACCESS_KEY_ID
+//   - AWS_SECRET_ACCESS_KEY
+//
+// 任一缺失则返回错误，客户端不初始化。
+func getSESClient() (*sesv2.Client, error) {
+	sesClientOnce.Do(func() {
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			sesClientErr = errors.New("AWS_REGION environment variable is not set")
+			return
+		}
+		accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+		secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+		if accessKey == "" || secretKey == "" {
+			sesClientErr = errors.New("AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY environment variable is not set")
+			return
+		}
+		cfg, err := config.LoadDefaultConfig(context.Background(),
+			config.WithRegion(region),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+		)
+		if err != nil {
+			sesClientErr = fmt.Errorf("load AWS config failed: %w", err)
+			return
+		}
+		sesClient = sesv2.NewFromConfig(cfg)
+	})
+	return sesClient, sesClientErr
 }
 
-func shouldUseSMTPLoginAuth() bool {
-	if SMTPForceAuthLogin {
-		return true
-	}
-	return isOutlookServer(SMTPAccount) || slices.Contains(EmailLoginAuthServerList, SMTPServer)
-}
-
-func getSMTPAuth() smtp.Auth {
-	if shouldUseSMTPLoginAuth() {
-		return LoginAuth(SMTPAccount, SMTPToken)
-	}
-	return smtp.PlainAuth("", SMTPAccount, SMTPToken, SMTPServer)
-}
-
+// SendEmail 通过 AWS SESv2 HTTPS API 发送邮件。
+//
+// 设计说明：
+//   - 原实现基于 net/smtp，Render 等平台封锁出站 SMTP 端口（25/465/587）会导致接口挂死。
+//   - 改用 SESv2 HTTPS API，规避 SMTP 端口限制。
+//   - 发件人地址从 SES_FROM_EMAIL 环境变量读取，显示名使用 SystemName。
+//   - 保持原签名 (subject, receiver, content string) error，所有调用方无需修改。
+//   - 10 秒超时控制，避免接口挂起。
+//   - receiver 支持分号分隔多个收件人（与原实现兼容）。
 func SendEmail(subject string, receiver string, content string) error {
-	if SMTPFrom == "" { // for compatibility
-		SMTPFrom = SMTPAccount
-	}
-	id, err2 := generateMessageID()
-	if err2 != nil {
-		return err2
-	}
-	if SMTPServer == "" && SMTPAccount == "" {
-		return fmt.Errorf("SMTP 服务器未配置")
-	}
-	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
-	mail := []byte(fmt.Sprintf("To: %s\r\n"+
-		"From: %s <%s>\r\n"+
-		"Subject: %s\r\n"+
-		"Date: %s\r\n"+
-		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
-		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
-	auth := getSMTPAuth()
-	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
-	to := strings.Split(receiver, ";")
-	var err error
-	if SMTPPort == 465 || SMTPSSLEnabled {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         SMTPServer,
-		}
-		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", SMTPServer, SMTPPort), tlsConfig)
-		if err != nil {
-			return err
-		}
-		client, err := smtp.NewClient(conn, SMTPServer)
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-		if err = client.Auth(auth); err != nil {
-			return err
-		}
-		if err = client.Mail(SMTPFrom); err != nil {
-			return err
-		}
-		receiverEmails := strings.Split(receiver, ";")
-		for _, receiver := range receiverEmails {
-			if err = client.Rcpt(receiver); err != nil {
-				return err
-			}
-		}
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		_, err = w.Write(mail)
-		if err != nil {
-			return err
-		}
-		err = w.Close()
-		if err != nil {
-			return err
-		}
-	} else {
-		err = smtp.SendMail(addr, auth, SMTPFrom, to, mail)
-	}
+	client, err := getSESClient()
 	if err != nil {
-		SysError(fmt.Sprintf("failed to send email to %s: %v", receiver, err))
+		SysError(fmt.Sprintf("SES client init failed: %v", err))
+		return err
 	}
-	return err
+
+	fromEmail := os.Getenv("SES_FROM_EMAIL")
+	if fromEmail == "" {
+		return errors.New("SES_FROM_EMAIL environment variable is not set")
+	}
+	// 发件人格式：Display Name <email>
+	fromAddress := fmt.Sprintf("%s <%s>", SystemName, fromEmail)
+
+	// 兼容原实现：receiver 用分号分隔多个收件人
+	toAddresses := strings.Split(receiver, ";")
+	for i := range toAddresses {
+		toAddresses[i] = strings.TrimSpace(toAddresses[i])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sesSendTimeout)
+	defer cancel()
+
+	input := &sesv2.SendEmailInput{
+		FromEmailAddress: aws.String(fromAddress),
+		Destination: &types.Destination{
+			ToAddresses: toAddresses,
+		},
+		Content: &types.EmailContent{
+			Simple: &types.Message{
+				Subject: &types.Content{
+					Data:    aws.String(subject),
+					Charset: aws.String("UTF-8"),
+				},
+				Body: &types.Body{
+					Html: &types.Content{
+						Data:    aws.String(content),
+						Charset: aws.String("UTF-8"),
+					},
+				},
+			},
+		},
+	}
+
+	_, err = client.SendEmail(ctx, input)
+	if err != nil {
+		// 提取 AWS 返回的错误码和消息，便于排查
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			SysError(fmt.Sprintf("SES SendEmail failed (code=%s, msg=%s): %v",
+				apiErr.ErrorCode(), apiErr.ErrorMessage(), err))
+		} else {
+			SysError(fmt.Sprintf("SES SendEmail failed: %v", err))
+		}
+		return fmt.Errorf("send email via SES failed: %w", err)
+	}
+	return nil
 }
