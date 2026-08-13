@@ -6,10 +6,10 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 const MODELS = [
-  { id: 'gpt5', name: 'GPT-5', input: 5, output: 20 },
-  { id: 'claude45', name: 'Claude Sonnet 4.5', input: 3.0, output: 15 },
-  { id: 'deepseek', name: 'DeepSeek V3.1', input: 0.28, output: 0.42 },
-  { id: 'gemini', name: 'Gemini 2.5 Flash', input: 0.08, output: 0.3 },
+  { id: 'gpt5', name: 'GPT-5', input: 0.55, output: 4.4 },
+  { id: 'claude45', name: 'Claude Sonnet 4.5', input: 1.98, output: 9.9 },
+  { id: 'deepseek', name: 'DeepSeek V3.1', input: 0.5028, output: 1.5084 },
+  { id: 'gemini', name: 'Gemini 2.5 Flash', input: 0.1414, output: 1.178 },
 ]
 
 export function UsageCalculator() {
