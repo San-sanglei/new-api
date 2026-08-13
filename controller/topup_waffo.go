@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 	waffo "github.com/waffo-com/waffo-go"
 	"github.com/waffo-com/waffo-go/config"
@@ -414,6 +415,32 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 
 	LockOrder(merchantOrderId)
 	defer UnlockOrder(merchantOrderId)
+
+	// 金额校验：防止支付平台回调金额与本地订单金额不一致
+	// OrderAmount 为字符串形式的美金金额（如 "9.99"），topUp.Money 为美元（元）
+	if result.OrderAmount != "" {
+		topUp, err := model.GetTopUpByTradeNo(merchantOrderId)
+		if err != nil {
+			common.SysError("Waffo 金额校验查询订单失败 trade_no=" + merchantOrderId + " err=" + err.Error())
+			sendWaffoWebhookResponse(c, wh, false, "db error")
+			return
+		}
+		if topUp != nil && topUp.Money > 0 {
+			callbackAmount, decErr := decimal.NewFromString(result.OrderAmount)
+			localAmount := decimal.NewFromFloat(topUp.Money)
+			if decErr != nil {
+				logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 回调金额解析失败 trade_no=%s order_amount=%s error=%q", merchantOrderId, result.OrderAmount, decErr.Error()))
+				sendWaffoWebhookResponse(c, wh, false, "invalid amount")
+				return
+			}
+			// 允许 0.01 美元容差，避免浮点精度问题
+			if callbackAmount.Sub(localAmount).Abs().GreaterThan(decimal.NewFromFloat(0.01)) {
+				logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 金额校验失败 trade_no=%s expected=%.2f actual=%s currency=%s", merchantOrderId, topUp.Money, result.OrderAmount, result.OrderCurrency))
+				sendWaffoWebhookResponse(c, wh, false, "amount mismatch")
+				return
+			}
+		}
+	}
 
 	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP()); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 充值处理失败 trade_no=%s client_ip=%s error=%q", merchantOrderId, c.ClientIP(), err.Error()))

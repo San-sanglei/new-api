@@ -533,6 +533,32 @@ func WaffoPancakeWebhook(c *gin.Context) {
 	LockOrder(tradeNo)
 	defer UnlockOrder(tradeNo)
 
+	// 金额校验：防止支付平台回调金额与本地订单金额不一致
+	// event.Data.Amount 为字符串形式的美金金额（如 "9.99"），topUp.Money 为美元（元）
+	if event.Data.Amount != "" {
+		topUp, err := model.GetTopUpByTradeNo(tradeNo)
+		if err != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 金额校验查询订单失败 trade_no=%s error=%q", tradeNo, err.Error()))
+			c.String(http.StatusInternalServerError, "retry")
+			return
+		}
+		if topUp != nil && topUp.Money > 0 {
+			callbackAmount, decErr := decimal.NewFromString(event.Data.Amount)
+			localAmount := decimal.NewFromFloat(topUp.Money)
+			if decErr != nil {
+				logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 回调金额解析失败 trade_no=%s amount=%s error=%q", tradeNo, event.Data.Amount, decErr.Error()))
+				c.String(http.StatusBadRequest, "invalid amount")
+				return
+			}
+			// 允许 0.01 美元容差，避免浮点精度问题
+			if callbackAmount.Sub(localAmount).Abs().GreaterThan(decimal.NewFromFloat(0.01)) {
+				logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 金额校验失败 trade_no=%s expected=%.2f actual=%s currency=%s", tradeNo, topUp.Money, event.Data.Amount, event.Data.Currency))
+				c.String(http.StatusBadRequest, "amount mismatch")
+				return
+			}
+		}
+	}
+
 	if err := model.RechargeWaffoPancake(tradeNo); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值处理失败 trade_no=%s event_id=%s order_id=%s client_ip=%s error=%q", tradeNo, event.ID, event.Data.OrderID, c.ClientIP(), err.Error()))
 		c.String(http.StatusInternalServerError, "retry")

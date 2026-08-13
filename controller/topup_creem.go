@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 )
 
@@ -353,6 +354,17 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Creem 充值订单状态非 pending，忽略处理 trade_no=%s status=%s creem_order_id=%s", referenceId, topUp.Status, event.Object.Order.Id))
 		c.Status(http.StatusOK) // 已处理过的订单，返回成功避免重复处理
 		return
+	}
+
+	// 金额校验：防止支付平台回调金额与本地订单金额不一致
+	// AmountPaid 为最小货币单位（分），topUp.Money 为美元（元）
+	if event.Object.Order.AmountPaid > 0 {
+		expectedAmountPaid := int(decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromInt(100)).IntPart())
+		if expectedAmountPaid > 0 && event.Object.Order.AmountPaid != expectedAmountPaid {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 金额校验失败 trade_no=%s creem_order_id=%s expected_paid=%d actual_paid=%d currency=%s", referenceId, event.Object.Order.Id, expectedAmountPaid, event.Object.Order.AmountPaid, event.Object.Order.Currency))
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
 	}
 
 	// 处理充值，传入客户邮箱和姓名信息

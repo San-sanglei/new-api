@@ -121,7 +121,8 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		return errors.New("未提供支付单号")
 	}
 
-	var quota float64
+	var quotaToAdd int
+	var logQuota int
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -143,6 +144,20 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return errors.New("充值订单状态错误")
 		}
 
+		// 金额校验：拒绝 0 或负数金额，防止异常金额增加余额
+		if topUp.Money <= 0 {
+			return errors.New("无效的充值金额")
+		}
+
+		// 使用 decimal 精确计算，避免 float64 精度问题
+		// 与 ManualCompleteTopUp 保持一致的算法
+		dMoney := decimal.NewFromFloat(topUp.Money)
+		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+		quotaToAdd = int(dMoney.Mul(dQuotaPerUnit).IntPart())
+		if quotaToAdd <= 0 {
+			return errors.New("无效的充值额度")
+		}
+
 		topUp.CompleteTime = common.GetTimestamp()
 		topUp.Status = common.TopUpStatusSuccess
 		err = tx.Save(topUp).Error
@@ -150,8 +165,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return err
 		}
 
-		quota = topUp.Money * common.QuotaPerUnit
-		err = tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(map[string]interface{}{"stripe_customer": customerId, "quota": gorm.Expr("quota + ?", quota)}).Error
+		err = tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(map[string]interface{}{"stripe_customer": customerId, "quota": gorm.Expr("quota + ?", quotaToAdd)}).Error
 		if err != nil {
 			return err
 		}
@@ -164,8 +178,15 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		return errors.New("充值失败，请稍后重试")
 	}
 
+	// 缓存一致性：事务提交成功后失效用户余额缓存，下次读取将从 DB 回源
+	// 失败时不更新缓存，保证缓存不会出现比 DB 更高的值
+	if cacheErr := invalidateUserCache(topUp.UserId); cacheErr != nil {
+		common.SysError(fmt.Sprintf("stripe recharge: invalidateUserCache failed, user_id=%d, err=%v", topUp.UserId, cacheErr))
+	}
+
+	logQuota = quotaToAdd
 	// Phase 2-D：使用订单已存的 tenant_id 写日志（不改支付流程）
-	RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount), callerIp, topUp.PaymentMethod, PaymentMethodStripe)
+	RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(logQuota), topUp.Amount), callerIp, topUp.PaymentMethod, PaymentMethodStripe)
 
 	return nil
 }
@@ -427,6 +448,14 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		return err
 	}
 
+	// 缓存一致性：事务提交成功后失效用户余额缓存
+	// 仅在本次实际完成补单（quotaToAdd > 0）时触发；幂等返回（已成功）不重复失效
+	if quotaToAdd > 0 {
+		if cacheErr := invalidateUserCache(userId); cacheErr != nil {
+			common.SysError(fmt.Sprintf("manual complete: invalidateUserCache failed, user_id=%d, err=%v", userId, cacheErr))
+		}
+	}
+
 	// 事务外记录日志，避免阻塞
 	// Phase 2-D：使用订单已存的 tenant_id 写日志
 	RecordTopupLogWithTenant(userId, topUpTenantID, fmt.Sprintf("管理员补单成功，充值金额: %v，支付金额：%f", logger.FormatQuota(quotaToAdd), payMoney), callerIp, paymentMethod, "admin")
@@ -469,6 +498,11 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		// Creem 直接使用 Amount 作为充值额度（整数）
 		quota = topUp.Amount
 
+		// 金额校验：拒绝 0 或负数充值，防止异常金额增加余额
+		if quota <= 0 {
+			return errors.New("无效的充值额度")
+		}
+
 		// 构建更新字段，优先使用邮箱，如果邮箱为空则使用用户名
 		updateFields := map[string]interface{}{
 			"quota": gorm.Expr("quota + ?", quota),
@@ -500,6 +534,12 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 	if err != nil {
 		common.SysError("creem topup failed: " + err.Error())
 		return errors.New("充值失败，请稍后重试")
+	}
+
+	// 缓存一致性：事务提交成功后失效用户余额缓存，下次读取将从 DB 回源
+	// 失败时不更新缓存，保证缓存不会出现比 DB 更高的值
+	if cacheErr := invalidateUserCache(topUp.UserId); cacheErr != nil {
+		common.SysError(fmt.Sprintf("creem recharge: invalidateUserCache failed, user_id=%d, err=%v", topUp.UserId, cacheErr))
 	}
 
 	RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodCreem)
@@ -563,7 +603,12 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 		return errors.New("充值失败，请稍后重试")
 	}
 
+	// 缓存一致性：事务提交成功后失效用户余额缓存
+	// 仅在本次实际完成充值（quotaToAdd > 0）时触发；幂等返回（已成功）不重复失效
 	if quotaToAdd > 0 {
+		if cacheErr := invalidateUserCache(topUp.UserId); cacheErr != nil {
+			common.SysError(fmt.Sprintf("waffo recharge: invalidateUserCache failed, user_id=%d, err=%v", topUp.UserId, cacheErr))
+		}
 		RecordTopupLogWithTenant(topUp.UserId, topUp.TenantID, fmt.Sprintf("Waffo充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money), callerIp, topUp.PaymentMethod, PaymentMethodWaffo)
 	}
 
@@ -625,6 +670,10 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 	}
 
 	if quotaToAdd > 0 {
+		// 缓存一致性：事务提交成功后失效用户余额缓存
+		if cacheErr := invalidateUserCache(topUp.UserId); cacheErr != nil {
+			common.SysError(fmt.Sprintf("waffo pancake recharge: invalidateUserCache failed, user_id=%d, err=%v", topUp.UserId, cacheErr))
+		}
 		// Phase 2-D：Waffo Pancake 回调路径无 c，使用订单已存的 tenant_id 写日志（不改支付流程）
 		if logErr := RecordLogWithTenant(topUp.UserId, topUp.TenantID, LogTypeTopup, fmt.Sprintf("Waffo Pancake充值成功，充值额度: %v，支付金额: %.2f", logger.FormatQuota(quotaToAdd), topUp.Money)); logErr != nil {
 			// P4-5：充值已到账但日志未落库，运维需对账 user quota 是否一致。
