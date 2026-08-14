@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,6 +20,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetTopUpInfo(c *gin.Context) {
@@ -377,46 +380,101 @@ func EpayNotify(c *gin.Context) {
 	}
 
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
+		// LockOrder 保留作为进程内互斥的第一道防线，但最终幂等保证来自事务内的 FOR UPDATE 行锁。
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		topUp, err := model.GetTopUpByTradeNo(verifyInfo.ServiceTradeNo)
-		if err != nil {
-			// P4-2：DB 查询错误必须终止回调流程，避免在 DB 异常时误判订单不存在或使用零值继续处理。
-			common.SysError("易支付 回调查询订单 DB 错误 trade_no=" + verifyInfo.ServiceTradeNo + " callback_type=" + verifyInfo.Type + " err=" + err.Error())
-			c.AbortWithStatus(http.StatusInternalServerError)
-			return
-		}
-		if topUp == nil {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 回调订单不存在 trade_no=%s callback_type=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(), common.GetJsonString(verifyInfo)))
-			return
-		}
-		if topUp.PaymentProvider != model.PaymentProviderEpay {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 订单支付网关不匹配 trade_no=%s order_provider=%s callback_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.PaymentProvider, verifyInfo.Type, c.ClientIP()))
-			return
-		}
-		if topUp.Status == common.TopUpStatusPending {
+
+		var processedTopUp *model.TopUp
+		isDuplicate := false
+
+		txErr := model.DB.Transaction(func(tx *gorm.DB) error {
+			topUp := &model.TopUp{}
+			// FOR UPDATE 行锁：多实例下保证同一订单的并发回调串行化，避免 TOCTOU 竞态导致重复到账。
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("trade_no = ?", verifyInfo.ServiceTradeNo).First(topUp).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// 订单不存在，幂等返回（不视为错误）
+					return nil
+				}
+				return err
+			}
+
+			// 支付网关校验
+			if topUp.PaymentProvider != model.PaymentProviderEpay {
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 订单支付网关不匹配 trade_no=%s order_provider=%s callback_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.PaymentProvider, verifyInfo.Type, c.ClientIP()))
+				return nil
+			}
+
+			// 幂等：已成功的订单不重复到账
+			if topUp.Status == common.TopUpStatusSuccess {
+				isDuplicate = true
+				processedTopUp = topUp
+				return nil
+			}
+
+			// 状态校验：仅 pending 状态可处理
+			if topUp.Status != common.TopUpStatusPending {
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 订单状态非 pending trade_no=%s status=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.Status, c.ClientIP()))
+				return nil
+			}
+
+			// 金额校验（decimal 精确比较，允许 0.01 容差）
+			if verifyInfo.Money != "" {
+				callbackAmount, decErr := decimal.NewFromString(verifyInfo.Money)
+				if decErr != nil {
+					logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 回调金额解析失败 trade_no=%s money=%s error=%q", verifyInfo.ServiceTradeNo, verifyInfo.Money, decErr.Error()))
+					return errors.New("epay callback amount parse failed")
+				}
+				localAmount := decimal.NewFromFloat(topUp.Money)
+				if callbackAmount.Sub(localAmount).Abs().GreaterThan(decimal.NewFromFloat(0.01)) {
+					logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 金额校验失败 trade_no=%s expected=%.2f actual=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.Money, verifyInfo.Money, c.ClientIP()))
+					return errors.New("epay amount mismatch")
+				}
+			}
+
+			// 更新订单状态与支付方式
 			if topUp.PaymentMethod != verifyInfo.Type {
-				logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 实际支付方式与订单不同 trade_no=%s order_payment_method=%s actual_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.PaymentMethod, verifyInfo.Type, c.ClientIP()))
 				topUp.PaymentMethod = verifyInfo.Type
 			}
 			topUp.Status = common.TopUpStatusSuccess
-			err := topUp.Update()
-			if err != nil {
-				logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 更新充值订单失败 trade_no=%s user_id=%d client_ip=%s error=%q topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), err.Error(), common.GetJsonString(topUp)))
-				return
+			topUp.CompleteTime = common.GetTimestamp()
+			if err := tx.Save(topUp).Error; err != nil {
+				return err
 			}
-			//user, _ := model.GetUserById(topUp.UserId, false)
-			//user.Quota += topUp.Amount * 500000
+
+			// 增加用户 quota（同一事务内，保证订单状态更新与额度增加原子性）
 			dAmount := decimal.NewFromInt(int64(topUp.Amount))
 			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 			quotaToAdd := int(dAmount.Mul(dQuotaPerUnit).IntPart())
-			err = model.IncreaseUserQuota(topUp.UserId, quotaToAdd, true)
-			if err != nil {
-				logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 更新用户额度失败 trade_no=%s user_id=%d client_ip=%s quota_to_add=%d error=%q topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), quotaToAdd, err.Error(), common.GetJsonString(topUp)))
-				return
+			if err := tx.Model(&model.User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd)).Error; err != nil {
+				return err
 			}
-			logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 充值成功 trade_no=%s user_id=%d client_ip=%s quota_to_add=%d money=%.2f topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), quotaToAdd, topUp.Money, common.GetJsonString(topUp)))
-			model.RecordTopupLog(topUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quotaToAdd), topUp.Money), c.ClientIP(), topUp.PaymentMethod, "epay")
+
+			processedTopUp = topUp
+			return nil
+		})
+
+		if txErr != nil {
+			common.SysError(fmt.Sprintf("易支付 充值事务失败 trade_no=%s error=%q", verifyInfo.ServiceTradeNo, txErr.Error()))
+			return
+		}
+
+		if isDuplicate {
+			logger.LogInfo(c.Request.Context(), fmt.Sprintf("duplicate epay callback ignored trade_no=%s", verifyInfo.ServiceTradeNo))
+			return
+		}
+
+		if processedTopUp != nil {
+			// 事务提交成功后失效用户缓存（不在事务内操作 Redis，避免事务回滚导致缓存与 DB 不一致）
+			if cacheErr := model.InvalidateUserCache(processedTopUp.UserId); cacheErr != nil {
+				common.SysError(fmt.Sprintf("epay recharge: invalidateUserCache failed, user_id=%d, err=%v", processedTopUp.UserId, cacheErr))
+			}
+
+			dAmount := decimal.NewFromInt(int64(processedTopUp.Amount))
+			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+			quotaToAdd := int(dAmount.Mul(dQuotaPerUnit).IntPart())
+
+			logger.LogInfo(c.Request.Context(), fmt.Sprintf("epay topup success trade_no=%s user_id=%d amount=%d money=%.2f quota_to_add=%d client_ip=%s", processedTopUp.TradeNo, processedTopUp.UserId, processedTopUp.Amount, processedTopUp.Money, quotaToAdd, c.ClientIP()))
+			model.RecordTopupLog(processedTopUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quotaToAdd), processedTopUp.Money), c.ClientIP(), processedTopUp.PaymentMethod, "epay")
 		}
 	} else {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 忽略事件 trade_no=%s callback_type=%s trade_status=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.TradeStatus, c.ClientIP(), common.GetJsonString(verifyInfo)))
