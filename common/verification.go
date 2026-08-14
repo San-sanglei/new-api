@@ -1,6 +1,9 @@
 package common
 
 import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +27,18 @@ var verificationMapMaxSize = 10
 var VerificationValidMinutes = 10
 
 func GenerateVerificationCode(length int) string {
+	// 注册邮箱验证码（length=6）：使用 6 位纯数字（100000-999999），便于用户输入。
+	// 密码重置 token（length=0）与随机密码（length=12）保留原 UUID 行为，不改动。
+	if length == 6 {
+		max := big.NewInt(900000) // 999999 - 100000 + 1
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			// 极端情况下 CSPRNG 失败，回退到 UUID 前 6 位（不影响安全性兜底）
+			code := strings.Replace(uuid.New().String(), "-", "", -1)
+			return code[:6]
+		}
+		return fmt.Sprintf("%06d", n.Int64()+100000)
+	}
 	code := uuid.New().String()
 	code = strings.Replace(code, "-", "", -1)
 	if length == 0 {
